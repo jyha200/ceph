@@ -500,6 +500,175 @@ void ChunkScrub::print_status(Formatter *f, ostream &out)
   }
 }
 
+class SampleDedup : public CrawlerThread
+{
+public:
+  SampleDedup(IoCtx& io_ctx, IoCtx& chunk_io_ctx, int n, int m,
+    ObjectCursor& begin, ObjectCursor end, int32_t report_period,
+    uint64_t num_objects, crawl_mode_t mode):
+    CrawlerThread(io_ctx, n, m, begin, end, report_period, num_objects),
+    chunk_io_ctx(chunk_io_ctx),
+    mode(mode) { }
+
+  ~SampleDedup() { };
+
+protected:
+  void* entry() override {
+    crawl();
+    return NULL;
+  }
+private:
+  struct chunk_t {
+    string oid;
+    size_t start;
+    size_t size;
+  };
+
+  void crawl();
+  void prepare_rados();
+  std::tuple<ObjectCursor, ObjectCursor> get_shard_boundary();
+  std::tuple<std::vector<ObjectItem>, ObjectCursor> get_objects(
+    ObjectCursor current,
+    ObjectCursor end);
+  std::vector<size_t> sample_object(size_t count);
+  void try_dedup_and_accumulate_result(ObjectItem& object);
+  bool ok_to_dedup_all();
+  void mark_dedup(ObjectCursor start, ObjectCursor end);
+  void mark_dedup(chunk_t& chunk);
+  void mark_non_dedup(ObjectCursor start, ObjectCursor end);
+  bufferlist read_object(ObjectItem& object);
+  std::vector<bufferlist> do_cdc(ObjectItem& object, bufferlist& data);
+  std::string generate_fingerprint(bufferlist chunk_data);
+  bool check_duplicated(std::string& fingerprint);
+  void add_duplication(std::string& fingerprint, chunk_t& chunk);
+  void add_fingerprint(std::string& fingerprint);
+  bool determine_object_duplication(size_t duplicated_size, size_t object_size);
+
+  Rados rados;
+  IoCtx chunk_io_ctx;
+  crawl_mode_t mode;
+  std::vector<chunk_t> duplicable_chunks;
+  size_t total_duplicated_size;
+  size_t total_object_size;
+};
+
+void SampleDedup::crawl() {
+  try {
+    prepare_rados();
+
+    ObjectCursor shard_start;
+    ObjectCursor shard_end;
+    std::tie(shard_start, shard_end) = get_shard_boundary();
+
+    for (ObjectCursor current_object = shard_start; current_object < shard_end; ) {
+      std::vector<ObjectItem> objects;
+      std::tie(objects, current_object) = get_objects(current_object, shard_end);
+      std::vector<size_t> sampled_indexes = sample_object(objects.size());
+
+      for (size_t index : sampled_indexes) {
+        ObjectItem target = objects[index];
+        try_dedup_and_accumulate_result(target);
+      }
+    }
+
+    if (ok_to_dedup_all()) {
+      mark_dedup(shard_start, shard_end);
+    }
+    else {
+      mark_non_dedup(shard_start, shard_end);
+      for (auto& duplicable_chunk : duplicable_chunks) {
+        mark_dedup(duplicable_chunk);
+      }
+    }
+  }
+  catch (std::exception& e) {
+  }
+}
+
+void SampleDedup::prepare_rados() {
+}
+
+std::tuple<ObjectCursor, ObjectCursor> SampleDedup::get_shard_boundary() {
+  ObjectCursor temp;
+  return std::make_tuple(temp, temp);
+}
+
+std::tuple<std::vector<ObjectItem>, ObjectCursor> SampleDedup::get_objects(
+  ObjectCursor current, ObjectCursor end) {
+  std::vector<ObjectItem> objects;
+  return std::make_tuple(objects, end);
+}
+
+std::vector<size_t> SampleDedup::sample_object(size_t count) {
+  return std::vector<size_t>();
+}
+
+void SampleDedup::try_dedup_and_accumulate_result(ObjectItem& object) {
+  bufferlist data = read_object(object);
+  std::vector<bufferlist> chunks = do_cdc(object, data);
+
+  size_t duplicated_size = 0;
+  for (auto& chunk : chunks) {
+    std::string fingerprint = generate_fingerprint(chunk);
+    if (check_duplicated(fingerprint)) {
+      chunk_t chunk_info;
+      add_duplication(fingerprint, chunk_info);
+      duplicated_size += chunk.length();
+    }
+    else {
+      add_fingerprint(fingerprint);
+    }
+  }
+
+  total_duplicated_size += duplicated_size;
+  total_object_size += data.length();
+}
+
+bufferlist SampleDedup::read_object(ObjectItem& object) {
+  bufferlist ret;
+  return ret;
+}
+
+std::vector<bufferlist> SampleDedup::do_cdc(
+  ObjectItem& object,
+  bufferlist& data) {
+  std::vector<bufferlist> ret;
+  return ret;
+}
+
+std::string SampleDedup::generate_fingerprint(bufferlist chunk_data) {
+  std::string ret;
+  return ret;
+}
+
+bool SampleDedup::check_duplicated(std::string& fingerprint) {
+  return false;
+}
+
+void SampleDedup::add_duplication(std::string& fingerprint, chunk_t& chunk) {
+}
+
+void SampleDedup::add_fingerprint(std::string& fingerprint) {
+}
+
+bool SampleDedup::determine_object_duplication(
+  size_t duplicated_size,
+  size_t object_size) {
+  return false;
+}
+
+bool SampleDedup::ok_to_dedup_all() {
+  return false;
+}
+
+void SampleDedup::mark_dedup(ObjectCursor start, ObjectCursor end) {
+}
+
+void SampleDedup::mark_dedup(chunk_t& chunk) {
+}
+
+void SampleDedup::mark_non_dedup(ObjectCursor start, ObjectCursor end) {
+}
 int estimate_dedup_ratio(const std::map < std::string, std::string > &opts,
 			  std::vector<const char*> &nargs)
 {
