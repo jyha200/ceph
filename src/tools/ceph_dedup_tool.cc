@@ -726,7 +726,7 @@ std::vector<std::tuple<bufferlist, pair<uint64_t, uint64_t>>> SampleDedup::do_cd
   bufferlist& data) {
   std::vector<std::tuple<bufferlist, pair<uint64_t, uint64_t>>> ret;
 
-  unique_ptr<CDC> cdc = CDC::create("fastcdc", chunk_size);
+  unique_ptr<CDC> cdc = CDC::create("fastcdc", 13);
   vector<pair<uint64_t, uint64_t>> chunks;
   cdc->calc_chunks(data, &chunks);
   for (auto& p : chunks) {
@@ -772,16 +772,17 @@ bool SampleDedup::determine_object_duplication(
   size_t duplicated_size,
   size_t object_size) {
   size_t dedup_ratio = duplicated_size * 100 / object_size;
-  return dedup_ratio < duplication_threshold;
+  return dedup_ratio >= duplication_threshold;
 }
 
 bool SampleDedup::ok_to_dedup_all() {
   size_t dedup_ratio = total_duplicated_size * 100 / total_object_size;
-  return dedup_ratio < whole_duplication_threshold;
+  return dedup_ratio >= whole_duplication_threshold;
 }
 
 std::vector<librados::AioCompletion*> SampleDedup::try_dedup() {
   std::vector<librados::AioCompletion*> ret(all_shard_objects.size());
+  int i = 0;
   for (auto object : all_shard_objects) {
     ObjectReadOperation op;
     op.tier_flush();
@@ -792,7 +793,8 @@ std::vector<librados::AioCompletion*> SampleDedup::try_dedup() {
       &op,
       librados::OPERATION_IGNORE_CACHE,
       NULL);
-    ret.push_back(completion);
+    ret[i] = completion;
+    i++;
   }
 
   return ret;
@@ -1192,6 +1194,117 @@ out:
   return (ret < 0) ? 1 : 0;
 }
 
+int make_crawling_daemon(const map<string, string> &opts,
+  vector<const char*> &nargs) {
+  
+  pid_t pid = fork();
+  if (pid < 0) {
+    cerr << "daemon process creation failed\n";
+    return -EINVAL;
+  }
+
+  if (pid != 0) {
+    return 0;
+  }
+
+  signal(SIGHUP, SIG_IGN);
+  close(STDIN_FILENO);
+  close(STDOUT_FILENO);
+
+  string chunk_pool_name;
+  map<string, string>::const_iterator i = opts.find("chunk-pool");
+  if (i != opts.end()) {
+    chunk_pool_name = i->second.c_str();
+  } else {
+    cerr << "must specify --chunk-pool" << std::endl;
+    return -EINVAL;
+  }
+
+  unsigned max_thread = default_max_thread;
+  i = opts.find("max-thread");
+  if (i != opts.end()) {
+    if (rados_sistrtoll(i, &max_thread)) {
+      return -EINVAL;
+    }
+  } 
+  uint32_t report_period = default_report_period;
+  i = opts.find("report-period");
+  if (i != opts.end()) {
+    if (rados_sistrtoll(i, &report_period)) {
+      return -EINVAL;
+    }
+  }
+
+  Rados rados;
+  int ret = rados.init_with_context(g_ceph_context);
+  if (ret < 0) {
+    cerr << "couldn't initialize rados: " << cpp_strerror(ret) << std::endl;
+    return -EINVAL;
+  }
+  ret = rados.connect();
+  if (ret) {
+    cerr << "couldn't connect to cluster: " << cpp_strerror(ret) << std::endl;
+    return -EINVAL;
+  }
+  uint32_t wakeup_period = 100; 
+  list<string> pool_names;
+  pool_names.push_back(chunk_pool_name);
+
+  while (true) {
+    IoCtx io_ctx, chunk_io_ctx;
+    ret = rados.ioctx_create(chunk_pool_name.c_str(), chunk_io_ctx);
+    if (ret < 0) {
+      cerr << "error opening pool "
+        << chunk_pool_name << ": "
+        << cpp_strerror(ret) << std::endl;
+      return -EINVAL;
+    }
+
+    glock.lock();
+    ObjectCursor begin = chunk_io_ctx.object_list_begin();
+    ObjectCursor end = chunk_io_ctx.object_list_end();
+    map<string, librados::pool_stat_t> stats;
+    ret = rados.get_pool_stats(pool_names, stats);
+    if (ret < 0) {
+      cerr << "error fetching pool stats: " << cpp_strerror(ret) << std::endl;
+      glock.unlock();
+      return -EINVAL;
+    }
+    if (stats.find(chunk_pool_name) == stats.end()) {
+      cerr << "stats can not find pool name: " << chunk_pool_name << std::endl;
+      glock.unlock();
+      return -EINVAL;
+    }
+    librados::pool_stat_t s = stats[chunk_pool_name];
+
+    estimate_threads.clear();
+    for (unsigned i = 0; i < max_thread; i++) {
+      unique_ptr<CrawlerThread> ptr (
+          new SampleDedup(
+            io_ctx,
+            chunk_io_ctx,
+            i,
+            max_thread,
+            begin,
+            end,
+            report_period,
+            s.num_objects,
+            SampleDedup::crawl_mode_t::DEEP));
+      ptr->create("sample_dedup");
+      estimate_threads.push_back(move(ptr));
+    }
+    glock.unlock();
+
+    for (auto &p : estimate_threads) {
+      cout << "join " << std::endl;
+      p->join();
+      cout << "joined " << std::endl;
+    }
+
+    sleep(wakeup_period);    
+  }
+}
+
 int main(int argc, const char **argv)
 {
   vector<const char*> args;
@@ -1271,7 +1384,9 @@ int main(int argc, const char **argv)
     return chunk_scrub_common(opts, args);
   } else if (op_name == "dump-chunk-refs") {
     return chunk_scrub_common(opts, args);
-  } else {
+  } else if (op_name == "deep-crawling") {
+    return make_crawling_daemon(opts, args);
+  }else {
     cerr << "unrecognized op " << op_name << std::endl;
     exit(1);
   }
