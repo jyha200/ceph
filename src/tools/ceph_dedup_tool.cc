@@ -41,6 +41,7 @@
 #include <locale>
 #include <memory>
 #include <math.h>
+#include <random>
 
 #include "tools/RadosDump.h"
 #include "cls/cas/cls_cas_client.h"
@@ -564,6 +565,7 @@ private:
   size_t duplication_threshold = 50;
   size_t chunk_dedup_threshold = 5;
   size_t whole_duplication_threshold = 50;
+  size_t sampling_ratio = 50;
   struct fp_store_entry_t {
     size_t duplication_count = 1;
     std::list<chunk_t> found_chunks;
@@ -571,6 +573,8 @@ private:
   std::unordered_map<std::string, fp_store_entry_t> instant_fingerprint_store;
   std::vector<ObjectItem> all_shard_objects;
 };
+
+SampleDedup::crawl_mode_t default_crawl_mode = SampleDedup::crawl_mode_t::DEEP;
 
 void SampleDedup::crawl() {
   try {
@@ -670,10 +674,16 @@ std::vector<size_t> SampleDedup::sample_object(size_t count) {
       break;
     }
 
-    case crawl_mode_t::SHALLOW:
-      // TODO implement shallow crawling
-      assert(false);
+    case crawl_mode_t::SHALLOW: {
+      size_t sampling_count = count * 100 / sampling_ratio;
+      indexes.resize(sampling_count);
+      default_random_engine generator;
+      uniform_int_distribution<size_t> distribution(0, count - 1);
+      for (auto& index : indexes) {
+        index = distribution(generator);;
+      }
       break;
+    }
 
     default:
       assert(false);
@@ -1235,6 +1245,12 @@ int make_crawling_daemon(const map<string, string> &opts,
     }
   }
 
+  SampleDedup::crawl_mode_t crawl_mode = default_crawl_mode;
+  i = opts.find("shallow-crawling");
+  if (i != opts.end()) {
+    crawl_mode = SampleDedup::crawl_mode_t::SHALLOW;
+  }
+
   Rados rados;
   int ret = rados.init_with_context(g_ceph_context);
   if (ret < 0) {
@@ -1289,7 +1305,7 @@ int make_crawling_daemon(const map<string, string> &opts,
             end,
             report_period,
             s.num_objects,
-            SampleDedup::crawl_mode_t::DEEP));
+            crawl_mode));
       ptr->create("sample_dedup");
       estimate_threads.push_back(move(ptr));
     }
