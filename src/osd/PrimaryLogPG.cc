@@ -7337,20 +7337,46 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	  result = -EOPNOTSUPP;
 	  break;
 	}
-	if (!obs.oi.has_manifest()) {
-	  result = 0;
-	  break;
-	}
 
 	if (oi.is_dirty()) {
-	  result = start_flush(ctx->op, ctx->obc, true, NULL, std::nullopt);
-	  if (result == -EINPROGRESS)
-	    result = -EAGAIN;
-	} else {
-	  result = 0;
+          oi.set_flag(object_info_t::FLAG_MANIFEST);
+          oi.manifest.type = object_manifest_t::TYPE_CHUNKED;
+
+          // is this object old and/or cold enough?
+          int temp = 0;
+          uint64_t temp_upper = 0, temp_lower = 0;
+          if (hit_set)
+            agent_estimate_temp(soid, &temp);
+          agent_state->temp_hist.add(temp);
+          agent_state->temp_hist.get_position_micro(temp, &temp_lower, &temp_upper);
+
+          dout(20) << __func__
+            << " temp " << temp
+            << " pos " << temp_lower << "-" << temp_upper
+            << ", evict_effort " << agent_state->evict_effort
+            << dendl;
+          dout(30) << "agent_state:\n";
+          Formatter *f = Formatter::create("");
+          f->open_object_section("agent_state");
+          agent_state->dump(f);
+          f->close_section();
+          f->flush(*_dout);
+          delete f;
+          *_dout << dendl;
+
+          if (1000000 - temp_upper >= agent_state->evict_effort) {
+            // Postpone flush
+            result = 0;
+          }
+          else {
+            // Flush cold object only
+            result = start_flush(ctx->op, ctx->obc, true, NULL, std::nullopt);
+            if (result == -EINPROGRESS){
+              result = -EAGAIN;
+            }
+          }
 	}
       }
-
       break;
 
     case CEPH_OSD_OP_TIER_EVICT:
