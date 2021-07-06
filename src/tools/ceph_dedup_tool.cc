@@ -1206,27 +1206,29 @@ out:
 
 int make_crawling_daemon(const map<string, string> &opts,
   vector<const char*> &nargs) {
-  
-  pid_t pid = fork();
-  if (pid < 0) {
-    cerr << "daemon process creation failed\n";
-    return -EINVAL;
-  }
 
-  if (pid != 0) {
-    return 0;
-  }
-
-  signal(SIGHUP, SIG_IGN);
-  close(STDIN_FILENO);
-  close(STDOUT_FILENO);
-
-  string chunk_pool_name;
-  map<string, string>::const_iterator i = opts.find("chunk-pool");
+  map<string, string>::const_iterator i = opts.find("daemon");
   if (i != opts.end()) {
-    chunk_pool_name = i->second.c_str();
+    pid_t pid = fork();
+    if (pid < 0) {
+      cerr << "daemon process creation failed\n";
+      return -EINVAL;
+    }
+
+    if (pid != 0) {
+      return 0;
+    }
+    signal(SIGHUP, SIG_IGN);
+    close(STDIN_FILENO);
+    close(STDOUT_FILENO);
+  }
+
+  string base_pool_name;
+  i = opts.find("base-pool");
+  if (i != opts.end()) {
+    base_pool_name = i->second.c_str();
   } else {
-    cerr << "must specify --chunk-pool" << std::endl;
+    cerr << "must specify --base-pool" << std::endl;
     return -EINVAL;
   }
 
@@ -1264,14 +1266,14 @@ int make_crawling_daemon(const map<string, string> &opts,
   }
   uint32_t wakeup_period = 100; 
   list<string> pool_names;
-  pool_names.push_back(chunk_pool_name);
+  pool_names.push_back(base_pool_name);
 
   while (true) {
     IoCtx io_ctx, chunk_io_ctx;
-    ret = rados.ioctx_create(chunk_pool_name.c_str(), chunk_io_ctx);
+    ret = rados.ioctx_create(base_pool_name.c_str(), chunk_io_ctx);
     if (ret < 0) {
       cerr << "error opening pool "
-        << chunk_pool_name << ": "
+        << base_pool_name << ": "
         << cpp_strerror(ret) << std::endl;
       return -EINVAL;
     }
@@ -1286,12 +1288,12 @@ int make_crawling_daemon(const map<string, string> &opts,
       glock.unlock();
       return -EINVAL;
     }
-    if (stats.find(chunk_pool_name) == stats.end()) {
-      cerr << "stats can not find pool name: " << chunk_pool_name << std::endl;
+    if (stats.find(base_pool_name) == stats.end()) {
+      cerr << "stats can not find pool name: " << base_pool_name << std::endl;
       glock.unlock();
       return -EINVAL;
     }
-    librados::pool_stat_t s = stats[chunk_pool_name];
+    librados::pool_stat_t s = stats[base_pool_name];
 
     estimate_threads.clear();
     for (unsigned i = 0; i < max_thread; i++) {
@@ -1380,6 +1382,10 @@ int main(int argc, const char **argv)
       opts["min-chunk-size"] = val;
     } else if (ceph_argparse_witharg(args, i, &val, "--max-chunk-size", (char*)NULL)) {
       opts["max-chunk-size"] = val;
+    } else if (ceph_argparse_witharg(args, i, &val, "--base-pool", (char*)NULL)) {
+      opts["base-pool"] = val;
+    } else if (ceph_argparse_flag(args, i, "--daemon", (char*)NULL)) {
+      opts["daemon"] = "true";
     } else if (ceph_argparse_flag(args, i, "--debug", (char*)NULL)) {
       opts["debug"] = "true";
     } else {
@@ -1400,7 +1406,7 @@ int main(int argc, const char **argv)
     return chunk_scrub_common(opts, args);
   } else if (op_name == "dump-chunk-refs") {
     return chunk_scrub_common(opts, args);
-  } else if (op_name == "deep-crawling") {
+  } else if (op_name == "sample-dedup") {
     return make_crawling_daemon(opts, args);
   }else {
     cerr << "unrecognized op " << op_name << std::endl;
