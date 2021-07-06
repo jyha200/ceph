@@ -600,12 +600,19 @@ void SampleDedup::crawl() {
     }
 
     if (ok_to_dedup_all()) {
+      if (debug) {
+        cout << "ok to dedup all\n";
+      }
       auto completions = try_dedup();
       for (auto& completion : completions) {
         completion->wait_for_complete();
       }
     }
     else {
+      if (debug) {
+        cout << "partially dedup\n";
+      }
+
       vector<librados::AioCompletion*> completions(duplicable_chunks.size());
       uint32_t i = 0;
       for (auto& duplicable_chunk : duplicable_chunks) {
@@ -704,6 +711,10 @@ void SampleDedup::try_dedup_and_accumulate_result(ObjectItem& object) {
       .start = chunk_boundary.first,
       .size = chunk_boundary.second};
     if (check_duplicated(fingerprint)) {
+      if (debug) {
+        cout << "duplication " << chunk_info.oid <<  " " << chunk_info.start << "~" << chunk_info.size << std::endl;
+      }
+
       add_duplication(fingerprint, chunk_info);
       duplicated_size += chunk_data.length();
     }
@@ -787,6 +798,10 @@ bool SampleDedup::determine_object_duplication(
 
 bool SampleDedup::ok_to_dedup_all() {
   size_t dedup_ratio = total_duplicated_size * 100 / total_object_size;
+  if (debug) {
+    cout << "dedup ratio " << dedup_ratio << std::endl;
+  }
+
   return dedup_ratio >= whole_duplication_threshold;
 }
 
@@ -796,6 +811,10 @@ std::vector<librados::AioCompletion*> SampleDedup::try_dedup() {
   for (auto object : all_shard_objects) {
     ObjectReadOperation op;
     op.tier_flush();
+    if (debug) {
+      cout << "try dedup " << object.oid << std::endl;
+    }
+
     librados::AioCompletion* completion = rados.aio_create_completion(NULL, NULL);
     chunk_io_ctx.aio_operate(
       object.oid,
@@ -1295,6 +1314,12 @@ int make_crawling_daemon(const map<string, string> &opts,
     }
     librados::pool_stat_t s = stats[base_pool_name];
 
+    bool debug = false;
+    i = opts.find("debug");
+    if (i != opts.end()) {
+      debug = true;
+    }
+
     estimate_threads.clear();
     for (unsigned i = 0; i < max_thread; i++) {
       unique_ptr<CrawlerThread> ptr (
@@ -1309,6 +1334,7 @@ int make_crawling_daemon(const map<string, string> &opts,
             s.num_objects,
             crawl_mode));
       ptr->create("sample_dedup");
+      ptr->set_debug(debug);
       estimate_threads.push_back(move(ptr));
     }
     glock.unlock();
