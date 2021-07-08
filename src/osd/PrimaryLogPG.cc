@@ -7341,7 +7341,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	if (oi.is_dirty()) {
           oi.set_flag(object_info_t::FLAG_MANIFEST);
           oi.manifest.type = object_manifest_t::TYPE_CHUNKED;
-
+#if 0
           // is this object old and/or cold enough?
           int temp = 0;
           uint64_t temp_upper = 0, temp_lower = 0;
@@ -7368,7 +7368,9 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
             // Postpone flush
             result = 0;
           }
-          else {
+          else
+#endif
+           {
             // Flush cold object only
             result = start_flush(ctx->op, ctx->obc, true, NULL, std::nullopt);
             if (result == -EINPROGRESS){
