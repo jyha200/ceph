@@ -512,10 +512,11 @@ public:
 
   SampleDedup(IoCtx& io_ctx, IoCtx& chunk_io_ctx, int n, int m,
     ObjectCursor& begin, ObjectCursor end, int32_t report_period,
-    uint64_t num_objects, crawl_mode_t mode):
+    uint64_t num_objects, uint32_t sampling_ratio, crawl_mode_t mode):
     CrawlerThread(io_ctx, n, m, begin, end, report_period, num_objects),
     chunk_io_ctx(chunk_io_ctx),
-    mode(mode) { }
+    mode(mode),
+    sampling_ratio(sampling_ratio) { }
 
   ~SampleDedup() { };
 
@@ -558,6 +559,7 @@ private:
   Rados rados;
   IoCtx chunk_io_ctx;
   crawl_mode_t mode;
+  uint32_t sampling_ratio;
   std::list<chunk_t> duplicable_chunks;
   size_t chunk_size = 8192;
   size_t total_duplicated_size = 0;
@@ -565,7 +567,6 @@ private:
   size_t duplication_threshold = 50;
   size_t chunk_dedup_threshold = 5;
   size_t whole_duplication_threshold = 50;
-  size_t sampling_ratio = 50;
   struct fp_store_entry_t {
     size_t duplication_count = 1;
     std::list<chunk_t> found_chunks;
@@ -682,7 +683,7 @@ std::vector<size_t> SampleDedup::sample_object(size_t count) {
     }
 
     case crawl_mode_t::SHALLOW: {
-      size_t sampling_count = count * 100 / sampling_ratio;
+      size_t sampling_count = count * sampling_ratio / 100;
       indexes.resize(sampling_count);
       default_random_engine generator;
       uniform_int_distribution<size_t> distribution(0, count - 1);
@@ -1272,6 +1273,14 @@ int make_crawling_daemon(const map<string, string> &opts,
     crawl_mode = SampleDedup::crawl_mode_t::SHALLOW;
   }
 
+  uint32_t sampling_ratio = 50;
+  i = opts.find("sampling-ratio");
+  if (i != opts.end()) {
+    if (rados_sistrtoll(i, &sampling_ratio)) {
+      return -EINVAL;
+    }
+  }
+
   Rados rados;
   int ret = rados.init_with_context(g_ceph_context);
   if (ret < 0) {
@@ -1332,6 +1341,7 @@ int make_crawling_daemon(const map<string, string> &opts,
             end,
             report_period,
             s.num_objects,
+            sampling_ratio,
             crawl_mode));
       ptr->create("sample_dedup");
       ptr->set_debug(debug);
