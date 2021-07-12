@@ -7339,8 +7339,8 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	}
 
 	if (oi.is_dirty()) {
-          oi.set_flag(object_info_t::FLAG_MANIFEST);
-          oi.manifest.type = object_manifest_t::TYPE_CHUNKED;
+          ctx->obc->obs.oi.set_flag(object_info_t::FLAG_MANIFEST);
+          ctx->obc->obs.oi.manifest.type = object_manifest_t::TYPE_CHUNKED;
 #if 0
           // is this object old and/or cold enough?
           int temp = 0;
