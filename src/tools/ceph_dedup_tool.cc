@@ -1420,6 +1420,8 @@ int main(int argc, const char **argv)
       opts["max-chunk-size"] = val;
     } else if (ceph_argparse_witharg(args, i, &val, "--base-pool", (char*)NULL)) {
       opts["base-pool"] = val;
+    } else if (ceph_argparse_witharg(args, i, &val, "--sampling-ratio", (char*)NULL)){
+	opts["sampling-ratio"] = val;   
     } else if (ceph_argparse_flag(args, i, "--daemon", (char*)NULL)) {
       opts["daemon"] = "true";
     } else if (ceph_argparse_flag(args, i, "--debug", (char*)NULL)) {
