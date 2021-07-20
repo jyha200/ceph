@@ -512,11 +512,14 @@ public:
 
   SampleDedup(IoCtx& io_ctx, IoCtx& chunk_io_ctx, int n, int m,
     ObjectCursor& begin, ObjectCursor end, int32_t report_period,
-    uint64_t num_objects, uint32_t sampling_ratio, crawl_mode_t mode):
+    uint64_t num_objects, uint32_t sampling_ratio, uint32_t sampling_threshold,
+    uint32_t chunk_dedup_threshold, crawl_mode_t mode):
     CrawlerThread(io_ctx, n, m, begin, end, report_period, num_objects),
     chunk_io_ctx(chunk_io_ctx),
     mode(mode),
-    sampling_ratio(sampling_ratio) { }
+    sampling_ratio(sampling_ratio),
+    chunk_dedup_threshold(chunk_dedup_threshold),
+    whole_duplication_threshold(sampling_threshold) { }
 
   ~SampleDedup() { };
 
@@ -554,7 +557,6 @@ private:
   bool check_duplicated(std::string& fingerprint);
   void add_duplication(std::string& fingerprint, chunk_t& chunk);
   void add_fingerprint(std::string& fingerprint, chunk_t& chunk);
-  bool determine_object_duplication(size_t duplicated_size, size_t object_size);
 
   Rados rados;
   IoCtx chunk_io_ctx;
@@ -564,9 +566,8 @@ private:
   size_t chunk_size = 8192;
   size_t total_duplicated_size = 0;
   size_t total_object_size = 0;
-  size_t duplication_threshold = 50;
-  size_t chunk_dedup_threshold = 5;
-  size_t whole_duplication_threshold = 50;
+  size_t chunk_dedup_threshold;
+  size_t whole_duplication_threshold;
   struct fp_store_entry_t {
     size_t duplication_count = 1;
     std::list<chunk_t> found_chunks;
@@ -788,13 +789,6 @@ void SampleDedup::add_fingerprint(std::string& fingerprint, chunk_t& chunk) {
   fp_store_entry_t fp_entry;
   fp_entry.found_chunks.push_back(chunk);
   instant_fingerprint_store.insert({fingerprint, fp_entry});
-}
-
-bool SampleDedup::determine_object_duplication(
-  size_t duplicated_size,
-  size_t object_size) {
-  size_t dedup_ratio = duplicated_size * 100 / object_size;
-  return dedup_ratio >= duplication_threshold;
 }
 
 bool SampleDedup::ok_to_dedup_all() {
@@ -1281,6 +1275,22 @@ int make_crawling_daemon(const map<string, string> &opts,
     }
   }
 
+  uint32_t sampling_threshold = 50;
+  i = opts.find("sampling-threshold");
+  if (i != opts.end()) {
+    if (rados_sistrtoll(i, &sampling_threshold)) {
+      return -EINVAL;
+    }
+  }
+
+  uint32_t chunk_dedup_threshold = 5;
+  i = opts.find("chunk-dedup-threshold");
+  if (i != opts.end()) {
+    if (rados_sistrtoll(i, &chunk_dedup_threshold)) {
+      return -EINVAL;
+    }
+  }
+
   Rados rados;
   int ret = rados.init_with_context(g_ceph_context);
   if (ret < 0) {
@@ -1342,6 +1352,8 @@ int make_crawling_daemon(const map<string, string> &opts,
             report_period,
             s.num_objects,
             sampling_ratio,
+            sampling_threshold,
+            chunk_dedup_threshold,
             crawl_mode));
       ptr->create("sample_dedup");
       ptr->set_debug(debug);
@@ -1422,6 +1434,10 @@ int main(int argc, const char **argv)
       opts["base-pool"] = val;
     } else if (ceph_argparse_witharg(args, i, &val, "--sampling-ratio", (char*)NULL)){
 	opts["sampling-ratio"] = val;   
+    } else if (ceph_argparse_witharg(args, i, &val, "--sampling-threshold", (char*)NULL)) {
+      opts["sampling-threshold"] = val;
+    } else if (ceph_argparse_witharg(args, i, &val, "--chunk-dedup-threshold", (char*)NULL)) {
+      opts["chunk-dedup-threshold"] = val;
     } else if (ceph_argparse_flag(args, i, "--daemon", (char*)NULL)) {
       opts["daemon"] = "true";
     } else if (ceph_argparse_flag(args, i, "--debug", (char*)NULL)) {
