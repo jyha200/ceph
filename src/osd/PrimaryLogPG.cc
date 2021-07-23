@@ -1013,7 +1013,22 @@ void PrimaryLogPG::do_command(
     prefix = command;
   }
 
-  if (prefix == "query") {
+  if (prefix == "add_chunk_info") {
+    string fingerprint;
+    string chunk_size_string;
+    if (!cmd_getval(cmdmap, "fingerprint", fingerprint)) {
+      dout(10) << "no fingerprint in add_chunk_info" << dendl;
+      goto out;
+    }
+
+    if (!cmd_getval(cmdmap, "chunk_size", chunk_size_string)) {
+      dout(10) << "no chunk_size in add_chunk_info" << dendl;
+      goto out;
+    }
+
+    dout(10) << "chunk_size " << chunk_size_string << " fingerprint " << fingerprint << dendl;
+  }
+  else if (prefix == "query") {
     f->open_object_section("pg");
     f->dump_stream("snap_trimq") << snap_trimq;
     f->dump_unsigned("snap_trimq_len", snap_trimq.size());

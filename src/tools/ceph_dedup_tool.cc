@@ -517,13 +517,14 @@ public:
   SampleDedup(IoCtx& io_ctx, IoCtx& chunk_io_ctx, int n, int m,
     ObjectCursor& begin, ObjectCursor end, int32_t report_period,
     uint64_t num_objects, uint32_t sampling_ratio, uint32_t object_dedup_threshold,
-    uint32_t chunk_dedup_threshold, crawl_mode_t mode):
+    uint32_t chunk_dedup_threshold, int32_t osd_count, crawl_mode_t mode):
     CrawlerThread(io_ctx, n, m, begin, end, report_period, num_objects),
     chunk_io_ctx(chunk_io_ctx),
     mode(mode),
     sampling_ratio(sampling_ratio),
     chunk_dedup_threshold(chunk_dedup_threshold),
-    object_dedup_threshold(object_dedup_threshold) { }
+    object_dedup_threshold(object_dedup_threshold),
+    osd_count(osd_count) { }
 
   ~SampleDedup() { };
 
@@ -562,6 +563,7 @@ private:
   bool check_duplicated(std::string& fingerprint);
   void add_duplication(chunk_t& chunk);
   void add_fingerprint(chunk_t& chunk);
+  void broadcast_chunk_info(string& fingerprint, size_t chunk_size);
   bool check_object_dedup(size_t dedup_size, size_t total_size);
   
   Rados rados;
@@ -581,14 +583,27 @@ private:
   std::unordered_map<std::string, fp_store_entry_t> instant_fingerprint_store;
   std::vector<ObjectItem> all_shard_objects;
   std::list<string> dedupable_objects;
+  int osd_count;
 };
 
 SampleDedup::crawl_mode_t default_crawl_mode = SampleDedup::crawl_mode_t::DEEP;
 
+void SampleDedup::broadcast_chunk_info(string& fingerprint, size_t chunk_size){
+  bufferlist inbl, outbl;
+  string cmd = string("{\"prefix\": \"add_chunk_info\",\"fingerprint\":\"")
+    + fingerprint
+    + string("\",\"chunk_size\":\"")
+    + to_string(chunk_size)
+    + string("\"}");
+
+  for (int osd = 0 ; osd < osd_count ; osd++) {
+    rados.osd_command(osd, cmd, inbl, &outbl, NULL);
+  }
+}
+
 void SampleDedup::crawl() {
   try {
     prepare_rados();
-
     ObjectCursor shard_start;
     ObjectCursor shard_end;
     std::tie(shard_start, shard_end) = get_shard_boundary();
@@ -1295,6 +1310,17 @@ int make_crawling_daemon(const map<string, string> &opts,
     }
   }
 
+  int32_t osd_count = 0;
+  i = opts.find("osd-count");
+  if (i != opts.end()) {
+    if (rados_sistrtoll(i, &osd_count)) {
+      return -EINVAL;
+    }
+  }
+  else {
+    cerr << "must specify --osd-count" << std::endl;
+  }
+
   Rados rados;
   int ret = rados.init_with_context(g_ceph_context);
   if (ret < 0) {
@@ -1375,6 +1401,7 @@ int make_crawling_daemon(const map<string, string> &opts,
             sampling_ratio,
             object_dedup_threshold,
             chunk_dedup_threshold,
+            osd_count,
             crawl_mode));
       ptr->create("sample_dedup");
       ptr->set_debug(debug);
@@ -1461,11 +1488,13 @@ int main(int argc, const char **argv)
     } else if (ceph_argparse_witharg(args, i, &val, "--base-pool", (char*)NULL)) {
       opts["base-pool"] = val;
     } else if (ceph_argparse_witharg(args, i, &val, "--sampling-ratio", (char*)NULL)){
-	opts["sampling-ratio"] = val;   
+      opts["sampling-ratio"] = val;   
     } else if (ceph_argparse_witharg(args, i, &val, "--object-dedup-threshold", (char*)NULL)) {
       opts["object-dedup-threshold"] = val;
     } else if (ceph_argparse_witharg(args, i, &val, "--chunk-dedup-threshold", (char*)NULL)) {
       opts["chunk-dedup-threshold"] = val;
+    } else if (ceph_argparse_witharg(args, i, &val, "--osd-count", (char*)NULL)) {
+      opts["osd-count"] = val;
     } else if (ceph_argparse_flag(args, i, "--daemon", (char*)NULL)) {
       opts["daemon"] = "true";
     } else if (ceph_argparse_flag(args, i, "--iterative", (char*)NULL)) {

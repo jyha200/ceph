@@ -2560,6 +2560,25 @@ void OSD::asok_command(
     f->dump_unsigned("newest_map", superblock.newest_map);
     f->dump_unsigned("num_pgs", num_pgs);
     f->close_section();
+  } else if (prefix == "add_chunk_info") {
+    vector<PGRef> pgs;
+    _get_pgs(&pgs);
+    for (auto& pg : pgs) {
+      if (pg->is_primary()) {
+        try {
+          pg->lock();
+          pg->do_command(prefix, cmdmap, inbl, on_finish);
+          pg->unlock();
+          return;
+        }
+        catch (const TOPNSPC::common::bad_cmd_get& e) {
+          pg->unlock();
+          ss << e.what();
+          ret = -EINVAL;
+          goto out;
+        }
+      }
+    }
   } else if (prefix == "flush_journal") {
     store->flush_journal();
   } else if (prefix == "dump_ops_in_flight" ||
@@ -3799,6 +3818,11 @@ void OSD::final_init()
   int r = admin_socket->register_command("status", asok_hook,
 					 "high-level status of OSD");
   ceph_assert(r == 0);
+  r = admin_socket->register_command("add_chunk_info",
+                                     asok_hook,
+                                     "add chunk information for deduplication");
+  ceph_assert(r == 0);
+
   r = admin_socket->register_command("flush_journal",
                                      asok_hook,
                                      "flush the journal to permanent store");
