@@ -589,6 +589,14 @@ void OSDService::agent_entry()
   while (!agent_stop_flag) {
     if (agent_queue.empty()) {
       dout(20) << __func__ << " empty queue" << dendl;
+      dout(10) << __func__
+        << " tiers " << agent_queue.size()
+        << ", ops " << agent_ops << "/"
+        << cct->_conf->osd_agent_max_ops
+        << (agent_active ? " active" : " NOT ACTIVE")
+        << dendl;
+      dout(20) << __func__ << " oids " << agent_oids << dendl;
+
       agent_cond.wait(agent_locker);
       continue;
     }

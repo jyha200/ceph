@@ -110,6 +110,8 @@ template <typename T>
 static ostream& _prefix(std::ostream *_dout, T *pg) {
   return pg->gen_prefix(*_dout);
 }
+static const uint64_t OFFSET_NON_CHUNK_DATA = 0xFFFFFFFFFFFFFFFF;
+
 
 /**
  * The CopyCallback class defines an interface for completions to the
@@ -1026,7 +1028,10 @@ void PrimaryLogPG::do_command(
       goto out;
     }
 
-    dout(10) << "chunk_size " << chunk_size_string << " fingerprint " << fingerprint << dendl;
+    size_t chunk_size = strtoull(chunk_size_string.c_str(), NULL, 10);
+    chunk_info_store.insert({fingerprint, chunk_size});
+    dout(10) << "chunk_size " << chunk_size_string << " fingerprint "
+      << fingerprint << "inserted" << dendl;
   }
   else if (prefix == "query") {
     f->open_object_section("pg");
@@ -3225,6 +3230,7 @@ void PrimaryLogPG::do_proxy_write(OpRequestRef op, ObjectContextRef obc)
   }
 
   dout(10) << __func__ << " Start proxy write for " << *m << dendl;
+  dout(10) << __func__ << " pool " << oloc.pool << dendl;
 
   ProxyWriteOpRef pwop(std::make_shared<ProxyWriteOp>(op, soid, m->ops, m->get_reqid()));
   pwop->ctx = new OpContext(op, m->get_reqid(), &pwop->ops, this);
@@ -6203,6 +6209,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
       ++ctx->num_write;
       result = 0;
       {
+	dout(10) << "dodo try flush " << __LINE__ << dendl;
 	tracepoint(osd, do_osd_op_pre_try_flush, soid.oid.name.c_str(), soid.snap.val);
 	if (ctx->lock_type != RWState::RWNONE) {
 	  dout(10) << "cache-try-flush without SKIPRWLOCKS flag set" << dendl;
@@ -6233,6 +6240,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
       break;
 
     case CEPH_OSD_OP_CACHE_FLUSH:
+	dout(10) << "dodo flush " << __LINE__ << dendl;
       ++ctx->num_write;
       result = 0;
       {
@@ -6276,6 +6284,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 
     case CEPH_OSD_OP_CACHE_EVICT:
       ++ctx->num_write;
+      dout(10) << "dodo evict " << __LINE__ << dendl;
       result = 0;
       {
 	tracepoint(osd, do_osd_op_pre_cache_evict, soid.oid.name.c_str(), soid.snap.val);
@@ -7338,6 +7347,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 
     case CEPH_OSD_OP_TIER_FLUSH:
       ++ctx->num_write;
+      dout(10) << "dodo tier flush " << __LINE__ << dendl;
       result = 0;
       {
 	if (pool.info.is_tier()) {
@@ -7354,35 +7364,11 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	}
 
 	if (oi.is_dirty()) {
-#if 0
-          ctx->obc->obs.oi.set_flag(object_info_t::FLAG_MANIFEST);
-          ctx->obc->obs.oi.manifest.type = object_manifest_t::TYPE_CHUNKED;
-#endif
-
-#if 0
-          // is this object old and/or cold enough?
-          int temp = 0;
-          uint64_t temp_upper = 0, temp_lower = 0;
-          if (hit_set) {
-            agent_estimate_temp(soid, &temp);
+          // Flush cold object only
+          result = start_flush(ctx->op, ctx->obc, true, NULL, std::nullopt);
+          if (result == -EINPROGRESS){
+            result = -EAGAIN;
           }
-          agent_state->temp_hist.add(temp);
-          agent_state->temp_hist.get_position_micro(temp, &temp_lower, &temp_upper);
-
-          if (1000000 - temp_upper >= agent_state->evict_effort) {
-            // Postpone flush
-            result = 0;
-          }
-          else {
-#endif
-            // Flush cold object only
-            result = start_flush(ctx->op, ctx->obc, true, NULL, std::nullopt);
-            if (result == -EINPROGRESS){
-              result = -EAGAIN;
-            }
-#if 0
-          }
-#endif
 	}
       }
       break;
@@ -10499,21 +10485,58 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc)
     obc_g ? &(obc_g->obs.oi.manifest) : nullptr,
     refs);
 
-  for (auto p : chunks) {
+  bufferlist normal_write_bl;
+  uint64_t normal_write_offset = 0;
+  for (auto& p : chunks) {
     hobject_t target = mop->new_manifest.chunk_map[p.first].oid;
     if (refs.find(target) == refs.end()) {
       continue;
     }
-    C_SetDedupChunks *fin = new C_SetDedupChunks(this, soid, get_last_peering_reset(), p.first);
-    ceph_tid_t tid = refcount_manifest(soid, target, refcount_t::CREATE_OR_GET_REF, 
-			    fin, move(chunks[p.first]));
-    mop->chunks[target] = make_pair(p.first, p.second.length());
-    mop->num_chunks++;
-    mop->tids[p.first] = tid;
+    ceph_tid_t tid;
+    bufferlist& bl = chunks[p.first];
+    if (!found_in_chunk_info_store(target, bl.length())) {
+      mop->new_manifest.chunk_map[p.first].offset = normal_write_offset;
+      normal_write_offset += mop->new_manifest.chunk_map[p.first].length;
+      normal_write_bl.append(bl);
+    } else {
+      C_SetDedupChunks *fin = new C_SetDedupChunks(this, soid, get_last_peering_reset(), p.first);
+      tid = refcount_manifest(soid, target, refcount_t::CREATE_OR_GET_REF, 
+          fin, move(bl));
+      fin->tid = tid;
+
+      mop->chunks[target] = make_pair(p.first, p.second.length());
+      mop->num_chunks++;
+      mop->tids[p.first] = tid;
+      dout(10) << __func__ << " oid: " << soid << " tid: " << tid
+        << " target: " << target << " offset: " << p.first
+        << " length: " << p.second.length() << dendl;
+    }
+  }
+
+  if (normal_write_bl.length() > 0) {
+    unsigned flags = CEPH_OSD_FLAG_IGNORE_CACHE | CEPH_OSD_FLAG_IGNORE_OVERLAY |
+      CEPH_OSD_FLAG_RWORDERED;
+    // make normal write data object and decide its location
+    object_t new_oid(soid.oid.name + "normal_write_data");
+    pg_t raw_pg;
+    object_locator_t oloc(soid);
+    oloc.pool = pool.info.get_dedup_tier();
+    get_osdmap()->object_locator_to_pg(new_oid, oloc, raw_pg);
+    hobject_t target = hobject_t(new_oid, oloc.key, snapid_t(), raw_pg.ps(),
+        raw_pg.pool(), oloc.nspace);
+
+    ObjectContextRef src_obc = get_object_context(soid, false, NULL);
+    C_SetDedupChunks *fin = new C_SetDedupChunks(this, soid, get_last_peering_reset(), OFFSET_NON_CHUNK_DATA);
+    Context *c = new C_OnFinisher(fin, osd->get_objecter_finisher(get_pg_shard()));
+    ceph_tid_t tid = osd->objecter->write_full(target.oid, oloc, SnapContext(), normal_write_bl,
+        ceph::real_clock::from_ceph_timespec(src_obc->obs.oi.mtime), flags, c); 
     fin->tid = tid;
+    mop->chunks[target] = make_pair(OFFSET_NON_CHUNK_DATA, normal_write_bl.length());
+    mop->num_chunks++;
+    mop->tids[OFFSET_NON_CHUNK_DATA] = tid;
     dout(10) << __func__ << " oid: " << soid << " tid: " << tid
-	    << " target: " << target << " offset: " << p.first
-	    << " length: " << p.second.length() << dendl;
+      << " target: " << target << " offset: " << OFFSET_NON_CHUNK_DATA
+      << " length: " << normal_write_bl.length() << dendl;
   }
 
   if (mop->tids.size()) {
@@ -10525,6 +10548,11 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc)
   }
 
   return -EINPROGRESS;
+}
+
+bool PrimaryLogPG::found_in_chunk_info_store(hobject_t& target, size_t size)
+{
+  return false;
 }
 
 int PrimaryLogPG::do_cdc(const object_info_t& oi, 
@@ -14712,6 +14740,7 @@ void PrimaryLogPG::agent_clear()
 // Return false if no objects operated on since start of object hash space
 bool PrimaryLogPG::agent_work(int start_max, int agent_flush_quota)
 {
+  dout(20) << __func__ << " agent_work " << dendl;
   std::scoped_lock locker{*this};
   if (!agent_state) {
     dout(10) << __func__ << " no agent state, stopping" << dendl;
@@ -14920,6 +14949,7 @@ void PrimaryLogPG::agent_load_hit_sets()
 
 bool PrimaryLogPG::agent_maybe_flush(ObjectContextRef& obc)
 {
+  dout(20) << __func__ << "try flush " << obc->obs.oi << dendl;
   if (!obc->obs.oi.is_dirty()) {
     dout(20) << __func__ << " skip (clean) " << obc->obs.oi << dendl;
     osd->logger->inc(l_osd_agent_skip);
@@ -14966,8 +14996,9 @@ bool PrimaryLogPG::agent_maybe_flush(ObjectContextRef& obc)
     osd->agent_finish_op(oid);
   };
 
+      dout(10) << "dodo agent flush " << __LINE__ << dendl;
   int result = start_flush(
-    OpRequestRef(), obc, false, NULL,
+    OpRequestRef(), obc, true, NULL,
     on_flush);
   if (result != -EINPROGRESS) {
     on_flush();
@@ -14984,6 +15015,7 @@ bool PrimaryLogPG::agent_maybe_flush(ObjectContextRef& obc)
 bool PrimaryLogPG::agent_maybe_evict(ObjectContextRef& obc, bool after_flush)
 {
   const hobject_t& soid = obc->obs.oi.soid;
+  dout(20) << __func__ << "try evict " << obc->obs.oi << dendl;
   if (!after_flush && obc->obs.oi.is_dirty()) {
     dout(20) << __func__ << " skip (dirty) " << obc->obs.oi << dendl;
     return false;
@@ -15346,10 +15378,12 @@ bool PrimaryLogPG::agent_choose_mode(bool restart, OpRequestRef op)
   // (including flush).  This is probably fine (they should be
   // correlated) but it is not precisely correct.
   if (agent_state->is_idle()) {
+  dout(20) << __func__ << " " << dendl;
     if (!restart && !old_idle) {
       osd->agent_disable_pg(this, old_effort);
     }
   } else {
+  dout(20) << __func__ << " " << dendl;
     if (restart || old_idle) {
       osd->agent_enable_pg(this, agent_state->evict_effort);
     } else if (old_effort != agent_state->evict_effort) {

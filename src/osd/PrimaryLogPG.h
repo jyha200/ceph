@@ -1458,6 +1458,7 @@ protected:
   int do_cdc(const object_info_t& oi, std::map<uint64_t, chunk_info_t>& chunk_map,
 	     std::map<uint64_t, bufferlist>& chunks);
   int start_dedup(OpRequestRef op, ObjectContextRef obc);
+  bool found_in_chunk_info_store(hobject_t& target, size_t size);
   hobject_t get_fpoid_from_chunk(const hobject_t soid, bufferlist& chunk);
   int finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_t offset);
   int finish_set_manifest_refcount(hobject_t oid, int r, ceph_tid_t tid, uint64_t offset);
@@ -1929,6 +1930,7 @@ public:
 
 private:
   DynamicPerfStats m_dynamic_perf_stats;
+  unordered_map<string, size_t> chunk_info_store;
 };
 
 inline ostream& operator<<(ostream& out, const PrimaryLogPG::RepGather& repop)
