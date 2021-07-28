@@ -194,8 +194,21 @@ constexpr record_delta_idx_t NULL_DELTA_IDX =
  * record_relative paddrs.
  */
 struct paddr_t {
-  device_segment_t segment = NULL_DEVICE_SEGMENT;
-  segment_off_t offset = NULL_SEG_OFF;
+  static const uint32_t BLOCK_INDEX_BITS = 40;
+  static constexpr uint64_t NULL_RAW_PADDR =
+    ((uint64_t)NULL_SEG_OFF << 32) + NULL_SEG_ID;
+
+  union {
+    struct {
+      segment_id_t segment;
+      segment_off_t offset;
+    };
+    struct {
+      uint64_t block : BLOCK_INDEX_BITS;
+      uint64_t block_offset : 64 - BLOCK_INDEX_BITS;
+    };
+    uint64_t raw_paddr = NULL_RAW_PADDR;
+  };
 
   paddr_t() = default;
   paddr_t(device_id_t id, segment_id_t sgt, segment_off_t offset)
@@ -292,8 +305,7 @@ struct paddr_t {
 
   DENC(paddr_t, v, p) {
     DENC_START(1, 1, p);
-    denc(v.segment, p);
-    denc(v.offset, p);
+    denc(v.raw_paddr, p);
     DENC_FINISH(p);
   }
 };

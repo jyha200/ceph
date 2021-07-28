@@ -351,10 +351,11 @@ Segment::write_ertr::future<> BlockSegmentManager::segment_write(
   bool ignore_check)
 {
   assert((bl.length() % superblock.block_size) == 0);
+  segment_off_t offset = addr.offset;
   logger().debug(
     "segment_write to segment {} at offset {}, physical offset {}, len {}",
     addr.segment,
-    addr.offset,
+    offset,
     get_offset(addr),
     bl.length());
   stats.data_write.increment(bl.length());

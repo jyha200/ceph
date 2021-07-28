@@ -74,10 +74,11 @@ Segment::write_ertr::future<> EphemeralSegmentManager::segment_write(
   ceph::bufferlist bl,
   bool ignore_check)
 {
+  segment_off_t offset = addr.offset;
   logger().debug(
     "segment_write to segment {} at offset {}, physical offset {}, len {}, crc {}",
     addr.segment,
-    addr.offset,
+    offset,
     get_offset(addr),
     bl.length(),
     bl.crc32c(1));
@@ -212,10 +213,11 @@ SegmentManager::read_ertr::future<> EphemeralSegmentManager::read(
 
   bufferlist bl;
   bl.push_back(out);
+  segment_off_t offset = addr.offset;
   logger().debug(
     "segment_read to segment {} at offset {}, physical offset {}, length {}, crc {}",
     addr.segment,
-    addr.offset,
+    offset,
     get_offset(addr),
     len,
     bl.begin().crc32c(len, 1));
