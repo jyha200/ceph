@@ -540,6 +540,7 @@ private:
     size_t start = 0;
     size_t size = 0;
     string fingerprint = "";
+    bufferlist data;
   };
 
   void crawl();
@@ -626,14 +627,7 @@ void SampleDedup::crawl() {
         try_dedup_and_accumulate_result(target);
       }
     }
-    if (debug) {
-      for (auto& a : instant_fingerprint_store) {
-        cout << "test " << a.first << " size " << a.second.first_chunk.size
-          << " count " << a.second.duplication_count << std::endl;
-      }
-    }
-
-   for (auto& duplicable_chunk : duplicable_chunks) {
+    for (auto& duplicable_chunk : duplicable_chunks) {
       mark_dedup(duplicable_chunk);
     }
   }
@@ -726,7 +720,9 @@ void SampleDedup::try_dedup_and_accumulate_result(ObjectItem& object) {
       .oid = object.oid,
       .start = chunk_boundary.first,
       .size = chunk_boundary.second,
-      .fingerprint = fingerprint};
+      .fingerprint = fingerprint,
+      .data = chunk_data
+      };
     if (debug) {
       cout << "check " << chunk_info.oid <<  " fp " << fingerprint << " " <<
         chunk_info.start << ", " << chunk_info.size << std::endl;
@@ -853,15 +849,30 @@ void SampleDedup::try_flush() {
 
 void SampleDedup::mark_dedup(chunk_t& chunk) {
   int res = 0;
-  ObjectReadOperation op;
   if (debug) {
     cout << "set chunk " << chunk.oid << " fp " << chunk.fingerprint << std::endl;
   }
+
+  uint64_t size;
+  time_t mtime;
+
+  int ret = chunk_io_ctx.stat(chunk.fingerprint, &size, &mtime);
+
+  if (ret == -2) {                                                   
+    bufferlist bl;
+    bl.append(chunk.data);
+    ObjectWriteOperation wop;
+    wop.write_full(bl);
+    res = chunk_io_ctx.operate(chunk.fingerprint, &wop);
+    assert(res == 0);  
+  }                             
+
+  ObjectReadOperation op;
   op.set_chunk(
       chunk.start,
       chunk.size,
       chunk_io_ctx,
-      DUMMY_NAME,
+      chunk.fingerprint,
       0,
       CEPH_OSD_OP_FLAG_WITH_REFERENCE);
   res = io_ctx.operate(
