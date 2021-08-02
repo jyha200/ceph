@@ -1029,9 +1029,17 @@ void PrimaryLogPG::do_command(
     }
 
     size_t chunk_size = strtoull(chunk_size_string.c_str(), NULL, 10);
-    chunk_info_store.insert({fingerprint, chunk_size});
-    dout(10) << "chunk_size " << chunk_size_string << " fingerprint "
-      << fingerprint << "inserted" << dendl;
+
+    auto iter = chunk_info_store.find(fingerprint);
+    if (iter == chunk_info_store.end()) {
+      chunk_info_store.insert({fingerprint, chunk_size});
+      dout(10) << "chunk_size " << chunk_size_string << " fingerprint "
+        << fingerprint << "inserted" << dendl;
+    }
+    else {
+      dout(10) << "chunk_size " << chunk_size_string << " fingerprint "
+        << fingerprint << "already exists" << dendl;
+    }
   }
   else if (prefix == "query") {
     f->open_object_section("pg");
@@ -7365,7 +7373,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 
 	if (oi.is_dirty()) {
           // Flush cold object only
-          result = start_flush(ctx->op, ctx->obc, true, NULL, std::nullopt);
+          result = start_flush(ctx->op, ctx->obc, true, NULL, std::nullopt, true);
           if (result == -EINPROGRESS){
             result = -EAGAIN;
           }
@@ -10440,7 +10448,7 @@ struct C_Flush : public Context {
   }
 };
 
-int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc)
+int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc, bool force)
 {
   const object_info_t& oi = obc->obs.oi;
   const hobject_t& soid = oi.soid;
@@ -10494,7 +10502,7 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc)
     }
     ceph_tid_t tid;
     bufferlist& bl = chunks[p.first];
-    if (!found_in_chunk_info_store(target, bl.length())) {
+    if (!force && !found_in_chunk_info_store(target, bl.length())) {
       mop->new_manifest.chunk_map[p.first].offset = normal_write_offset;
       normal_write_offset += mop->new_manifest.chunk_map[p.first].length;
       normal_write_bl.append(bl);
@@ -10517,7 +10525,7 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc)
     unsigned flags = CEPH_OSD_FLAG_IGNORE_CACHE | CEPH_OSD_FLAG_IGNORE_OVERLAY |
       CEPH_OSD_FLAG_RWORDERED;
     // make normal write data object and decide its location
-    object_t new_oid(soid.oid.name + "normal_write_data");
+    object_t new_oid(soid.oid.name + "_normal_write_data");
     pg_t raw_pg;
     object_locator_t oloc(soid);
     oloc.pool = pool.info.get_dedup_tier();
@@ -10552,7 +10560,8 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc)
 
 bool PrimaryLogPG::found_in_chunk_info_store(hobject_t& target, size_t size)
 {
-  return false;
+  auto iter = chunk_info_store.find(target.oid.name);
+  return iter != chunk_info_store.end();
 }
 
 int PrimaryLogPG::do_cdc(const object_info_t& oi, 
@@ -10774,7 +10783,7 @@ int PrimaryLogPG::finish_set_manifest_refcount(hobject_t oid, int r, ceph_tid_t 
 int PrimaryLogPG::start_flush(
   OpRequestRef op, ObjectContextRef obc,
   bool blocking, hobject_t *pmissing,
-  std::optional<std::function<void()>> &&on_flush)
+  std::optional<std::function<void()>> &&on_flush, bool dedup)
 {
   const object_info_t& oi = obc->obs.oi;
   const hobject_t& soid = oi.soid;
@@ -10872,8 +10881,8 @@ int PrimaryLogPG::start_flush(
     osd->objecter->op_cancel(tids, -ECANCELED);
   }
 
-  if (obc->obs.oi.has_manifest() && obc->obs.oi.manifest.is_chunked()) {
-    int r = start_dedup(op, obc);
+  if (dedup || (obc->obs.oi.has_manifest() && obc->obs.oi.manifest.is_chunked())) {
+    int r = start_dedup(op, obc, dedup);
     if (r != -EINPROGRESS) {
       if (blocking)
 	obc->stop_block();

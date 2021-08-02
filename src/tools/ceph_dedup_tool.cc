@@ -549,7 +549,7 @@ private:
     ObjectCursor current,
     ObjectCursor end,
     size_t max_object_count);
-  std::vector<size_t> sample_object(size_t count);
+  std::set<size_t> sample_object(size_t count);
   void try_dedup_and_accumulate_result(ObjectItem& object);
   bool ok_to_dedup_all();
   void try_flush();
@@ -579,6 +579,7 @@ private:
   struct fp_store_entry_t {
     size_t duplication_count = 1;
     std::list<chunk_t> found_chunks;
+    chunk_t first_chunk;
   };
   std::unordered_map<std::string, fp_store_entry_t> instant_fingerprint_store;
   std::vector<ObjectItem> all_shard_objects;
@@ -602,6 +603,10 @@ void SampleDedup::broadcast_chunk_info(string& fingerprint, size_t chunk_size){
 }
 
 void SampleDedup::crawl() {
+  cout << "SamnpleRatio : " << sampling_ratio << std::endl
+    << "Object Dedup Threshold : " << object_dedup_threshold << std::endl
+    << "Chunk Dedup Threshold : " << chunk_dedup_threshold << std::endl
+    << "Mode : " << ((mode == crawl_mode_t::DEEP) ? "DEEP" : "SHALOW") << std::endl;
   try {
     prepare_rados();
     ObjectCursor shard_start;
@@ -610,23 +615,27 @@ void SampleDedup::crawl() {
 
     for (ObjectCursor current_object = shard_start; current_object < shard_end; ) {
       std::vector<ObjectItem> objects;
-      std::tie(objects, current_object) = get_objects(current_object, shard_end, 100);
+      std::tie(objects, current_object) = get_objects(current_object, shard_end, 10000);
       all_shard_objects.insert(
         all_shard_objects.end(),
         objects.begin(),
         objects.end());
-      std::vector<size_t> sampled_indexes = sample_object(objects.size());
-
+      std::set<size_t> sampled_indexes = sample_object(objects.size());
       for (size_t index : sampled_indexes) {
         ObjectItem target = objects[index];
         try_dedup_and_accumulate_result(target);
       }
     }
+    if (debug) {
+      for (auto& a : instant_fingerprint_store) {
+        cout << "test " << a.first << " size " << a.second.first_chunk.size
+          << " count " << a.second.duplication_count << std::endl;
+      }
+    }
 
-    for (auto& duplicable_chunk : duplicable_chunks) {
+   for (auto& duplicable_chunk : duplicable_chunks) {
       mark_dedup(duplicable_chunk);
     }
-    try_flush();
   }
   catch (std::exception& e) {
   }
@@ -672,26 +681,28 @@ std::tuple<std::vector<ObjectItem>, ObjectCursor> SampleDedup::get_objects(
   return std::make_tuple(objects, next);
 }
 
-std::vector<size_t> SampleDedup::sample_object(size_t count) {
-  std::vector<size_t> indexes; 
+std::set<size_t> SampleDedup::sample_object(size_t count) {
+  std::set<size_t> indexes; 
   switch(mode) {
     case crawl_mode_t::DEEP: {
-      indexes.resize(count);
-      size_t i = 0;
-      for (auto& index : indexes) {
-        index = i;
-        i++;
+      for (size_t index = 0 ; index < count ; index++) {
+        indexes.insert(index);
       }
       break;
     }
 
     case crawl_mode_t::SHALLOW: {
       size_t sampling_count = count * sampling_ratio / 100;
-      indexes.resize(sampling_count);
       default_random_engine generator;
       uniform_int_distribution<size_t> distribution(0, count - 1);
-      for (auto& index : indexes) {
-        index = distribution(generator);;
+      for (size_t allocated_count = 0 ; allocated_count < sampling_count ; allocated_count++) {
+        size_t index;
+        std::set<size_t>::iterator iter;
+        do {
+          index = distribution(generator);
+          iter = indexes.find(index);
+        } while (iter != indexes.end());
+        indexes.insert(index);
       }
       break;
     }
@@ -716,10 +727,15 @@ void SampleDedup::try_dedup_and_accumulate_result(ObjectItem& object) {
       .start = chunk_boundary.first,
       .size = chunk_boundary.second,
       .fingerprint = fingerprint};
+    if (debug) {
+      cout << "check " << chunk_info.oid <<  " fp " << fingerprint << " " <<
+        chunk_info.start << ", " << chunk_info.size << std::endl;
+    }
     if (check_duplicated(fingerprint)) {
       if (debug) {
-        cout << "duplication " << chunk_info.oid <<  " " << chunk_info.start <<
-          "~" << chunk_info.size << std::endl;
+        cout << "duplication oid " << chunk_info.oid <<  " " <<
+          chunk_info.fingerprint << " " << chunk_info.start <<
+          ", " << chunk_info.size << std::endl;
       }
 
       add_duplication(chunk_info);
@@ -732,6 +748,9 @@ void SampleDedup::try_dedup_and_accumulate_result(ObjectItem& object) {
   }
 
   size_t object_size = data.length();
+  if (debug) {
+    cout << "oid " << object.oid << " object_size " << object_size << " dup size " << duplicated_size << std::endl;
+  }
   if (check_object_dedup(duplicated_size, object_size)) {
     if (debug) {
       cout << "dedup object " << object.oid << std::endl;
@@ -805,12 +824,16 @@ void SampleDedup::add_duplication(chunk_t& chunk) {
 void SampleDedup::add_fingerprint(chunk_t& chunk) {
   fp_store_entry_t fp_entry;
   fp_entry.found_chunks.push_back(chunk);
+  fp_entry.first_chunk = chunk;
   instant_fingerprint_store.insert({chunk.fingerprint, fp_entry});
 }
 
 bool SampleDedup::check_object_dedup(size_t dedup_size, size_t total_size) {
-  double dedup_ratio = dedup_size / total_size * 100;
-  return dedup_ratio >= object_dedup_threshold;
+  if (total_size > 0) {
+    double dedup_ratio = dedup_size / total_size * 100;
+    return dedup_ratio >= object_dedup_threshold;
+  }
+  return false;
 }
 
 void SampleDedup::try_flush() {
@@ -846,6 +869,7 @@ void SampleDedup::mark_dedup(chunk_t& chunk) {
       &op,
       NULL);
   assert(res == 0);
+  broadcast_chunk_info(chunk.fingerprint, chunk.size);
 }
 
 void SampleDedup::mark_non_dedup(ObjectCursor start, ObjectCursor end) {
@@ -1211,9 +1235,7 @@ int chunk_scrub_common(const std::map < std::string, std::string > &opts,
   glock.unlock();
 
   for (auto &p : estimate_threads) {
-    cout << "join " << std::endl;
     p->join();
-    cout << "joined " << std::endl;
   }
 
   print_chunk_scrub();
@@ -1302,7 +1324,7 @@ int make_crawling_daemon(const map<string, string> &opts,
     }
   }
 
-  uint32_t chunk_dedup_threshold = 5;
+  uint32_t chunk_dedup_threshold = 2;
   i = opts.find("chunk-dedup-threshold");
   if (i != opts.end()) {
     if (rados_sistrtoll(i, &chunk_dedup_threshold)) {
@@ -1403,16 +1425,14 @@ int make_crawling_daemon(const map<string, string> &opts,
             chunk_dedup_threshold,
             osd_count,
             crawl_mode));
-      ptr->create("sample_dedup");
       ptr->set_debug(debug);
+      ptr->create("sample_dedup");
       estimate_threads.push_back(move(ptr));
     }
     glock.unlock();
 
     for (auto &p : estimate_threads) {
-      cout << "join " << std::endl;
       p->join();
-      cout << "joined " << std::endl;
     }
 
     if (iterative) {
@@ -1499,7 +1519,10 @@ int main(int argc, const char **argv)
       opts["daemon"] = "true";
     } else if (ceph_argparse_flag(args, i, "--iterative", (char*)NULL)) {
       opts["iterative"] = "true";
+    } else if (ceph_argparse_flag(args, i, "--shallow-crawling", (char*)NULL)) {
+      opts["shallow-crawling"] = true;
     } else if (ceph_argparse_flag(args, i, "--debug", (char*)NULL)) {
+      printf("debug optioned\n");
       opts["debug"] = "true";
     } else {
       if (val[0] == '-') {
