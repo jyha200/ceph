@@ -631,11 +631,11 @@ void librados::ObjectReadOperation::cache_evict()
   o->cache_evict();
 }
 
-void librados::ObjectReadOperation::tier_flush()
+void librados::ObjectReadOperation::tier_flush(bool force)
 {
   ceph_assert(impl);
   ::ObjectOperation *o = &impl->o;
-  o->tier_flush();
+  o->tier_flush(force);
 }
 
 void librados::ObjectReadOperation::tier_evict()

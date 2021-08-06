@@ -5199,6 +5199,105 @@ TEST_F(LibRadosTwoPoolsPP, DedupFlushRead) {
 
 }
 
+TEST_F(LibRadosTwoPoolsPP, ManifestNormalWriteRead) {
+
+  bufferlist inbl;
+  ASSERT_EQ(0, cluster.mon_command(
+	set_pool_str(cache_pool_name, "fingerprint_algorithm", "sha1"),
+	inbl, NULL, NULL));
+  ASSERT_EQ(0, cluster.mon_command(
+	set_pool_str(cache_pool_name, "dedup_tier", pool_name),
+	inbl, NULL, NULL));
+  ASSERT_EQ(0, cluster.mon_command(
+	set_pool_str(cache_pool_name, "dedup_chunk_algorithm", "fastcdc"),
+	inbl, NULL, NULL));
+  ASSERT_EQ(0, cluster.mon_command(
+	set_pool_str(cache_pool_name, "dedup_cdc_chunk_size", 1024),
+	inbl, NULL, NULL));
+
+  // wait for maps to settle
+  cluster.wait_for_latest_osdmap();
+
+  // create object
+  bufferlist gbl;
+  {
+    generate_buffer(1024*8, &gbl);
+    ObjectWriteOperation op;
+    op.write_full(gbl);
+    ASSERT_EQ(0, cache_ioctx.operate("foo-chunk", &op));
+  }
+  {
+    bufferlist bl;
+    bl.append("DDse chunk");
+    ObjectWriteOperation op;
+    op.write_full(bl);
+    ASSERT_EQ(0, ioctx.operate("bar-chunk", &op));
+  }
+  // read and verify original object
+  {
+    bufferlist test_bl;
+    string tgt_oid;
+    tgt_oid = string("foo-chunk");
+    ASSERT_EQ(2, cache_ioctx.read(tgt_oid, test_bl, 2, 0));
+    ASSERT_EQ(gbl[1], test_bl[1]);
+  }
+  // set-chunk to set manifest object
+  {
+    ObjectReadOperation op;
+    op.set_chunk(0, 2, ioctx, "bar-chunk", 0,
+		CEPH_OSD_OP_FLAG_WITH_REFERENCE);
+    librados::AioCompletion *completion = cluster.aio_create_completion();
+    ASSERT_EQ(0, cache_ioctx.aio_operate("foo-chunk", completion, &op,
+	      librados::OPERATION_IGNORE_CACHE, NULL));
+    completion->wait_for_complete();
+    ASSERT_EQ(0, completion->get_return_value());
+    completion->release();
+  }
+
+  // flush
+  {
+    ObjectReadOperation op;
+    op.tier_flush(true);
+    librados::AioCompletion *completion = cluster.aio_create_completion();
+    ASSERT_EQ(0, cache_ioctx.aio_operate(
+      "foo-chunk", completion, &op,
+      librados::OPERATION_IGNORE_CACHE, NULL));
+    completion->wait_for_complete();
+    ASSERT_EQ(0, completion->get_return_value());
+    completion->release();
+  }
+
+  // read and verify normally written object
+  {
+    bufferlist test_bl;
+    string tgt_oid;
+    tgt_oid = string("foo-chunk_normal_write_data");
+    ASSERT_EQ(2, ioctx.read(tgt_oid, test_bl, 2, 0));
+    ASSERT_EQ(gbl[1], test_bl[1]);
+  }
+
+  // evict
+  {
+    ObjectReadOperation op;
+    op.tier_evict();
+    librados::AioCompletion *completion = cluster.aio_create_completion();
+    ASSERT_EQ(0, cache_ioctx.aio_operate("foo-chunk", completion, &op,
+          librados::OPERATION_IGNORE_OVERLAY,
+          NULL));
+    completion->wait_for_complete();
+    ASSERT_EQ(0, completion->get_return_value());
+    completion->release();
+  }
+  // read and verify original object
+  {
+    bufferlist test_bl;
+    string tgt_oid;
+    tgt_oid = string("foo-chunk");
+    ASSERT_EQ(2, cache_ioctx.read(tgt_oid, test_bl, 2, 0));
+    ASSERT_EQ(gbl[1], test_bl[1]);
+  }
+}
+
 TEST_F(LibRadosTwoPoolsPP, ManifestFlushSnap) {
   // skip test if not yet octopus
   if (_get_required_osd_release(cluster) < "octopus") {

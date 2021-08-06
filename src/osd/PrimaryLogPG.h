@@ -1355,7 +1355,7 @@ protected:
   int start_flush(
     OpRequestRef op, ObjectContextRef obc,
     bool blocking, hobject_t *pmissing,
-    std::optional<std::function<void()>> &&on_flush, bool dedup = true);
+    std::optional<std::function<void()>> &&on_flush, bool dedup = false);
   void finish_flush(hobject_t oid, ceph_tid_t tid, int r);
   int try_flush_mark_clean(FlushOpRef fop);
   void cancel_flush(FlushOpRef fop, bool requeue, std::vector<ceph_tid_t> *tids);
@@ -1435,7 +1435,7 @@ protected:
   void do_proxy_chunked_op(OpRequestRef op, const hobject_t& missing_oid,
 			   ObjectContextRef obc, bool write_ordered);
   void do_proxy_chunked_read(OpRequestRef op, ObjectContextRef obc, int op_index,
-			     uint64_t chunk_index, uint64_t req_offset, uint64_t req_length,
+			     uint64_t chunk_index, uint64_t req_offset, uint64_t req_length, uint64_t chunk_offset,
 			     uint64_t req_total_len, bool write_ordered);
   bool can_proxy_chunked_read(OpRequestRef op, ObjectContextRef obc);
   void _copy_some_manifest(ObjectContextRef obc, CopyOpRef cop, uint64_t start_offset);

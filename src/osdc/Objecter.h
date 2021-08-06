@@ -1553,8 +1553,9 @@ struct ObjectOperation {
     add_op(CEPH_OSD_OP_UNSET_MANIFEST);
   }
 
-  void tier_flush() {
-    add_op(CEPH_OSD_OP_TIER_FLUSH);
+  void tier_flush(bool force) {
+    OSDOp& osd_op = add_op(CEPH_OSD_OP_TIER_FLUSH);
+    encode(force, osd_op.indata);
   }
 
   void tier_evict() {

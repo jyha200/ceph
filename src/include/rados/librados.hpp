@@ -752,7 +752,7 @@ inline namespace v14_2_0 {
      * flush a manifest tier object to backing tier; will block racing
      * updates.
      */
-    void tier_flush();
+    void tier_flush(bool force = false);
     /**
      * evict a manifest tier object to backing tier; will block racing
      * updates.
