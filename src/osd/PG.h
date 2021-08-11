@@ -581,6 +581,7 @@ public:
     const ceph::buffer::list& idata,
     std::function<void(int,const std::string&,ceph::buffer::list&)> on_finish) = 0;
 
+  virtual bool dedup_cache_work() {return false;}
   virtual bool agent_work(int max) = 0;
   virtual bool agent_work(int max, int agent_flush_quota) = 0;
   virtual void agent_stop() = 0;

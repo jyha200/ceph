@@ -359,12 +359,22 @@ private:
       return NULL;
     }
   } agent_thread;
+  struct DedupCacheThread : public Thread {
+    OSDService* osd;
+    explicit DedupCacheThread(OSDService *o) : osd(o) {}
+    void *entry() override {
+      osd->dedup_cache_entry();
+      return NULL;
+    }
+  } dedup_cache_thread;
   bool agent_stop_flag;
+  bool dedup_cache_stop_flag;
   ceph::mutex agent_timer_lock = ceph::make_mutex("OSDService::agent_timer_lock");
   SafeTimer agent_timer;
 
 public:
   void agent_entry();
+  void dedup_cache_entry();
   void agent_stop();
 
   void _enqueue(PG *pg, uint64_t priority) {

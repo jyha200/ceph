@@ -961,6 +961,23 @@ protected:
   hobject_t get_hit_set_archive_object(utime_t start,
 				       utime_t end,
 				       bool using_gmt);
+  //dedup_cache
+  boost::scoped_ptr<TierAgentState> cache_state;
+  uint32_t cache_hit_set_period = 1;
+  uint32_t cache_hit_set_count = 1;
+  HitSetRef cache_hit_set;
+  utime_t cache_hit_set_start_stamp;
+  HitSet::Params cache_hit_set_params;
+  uint64_t cache_max_bytes = 1073741824; // 1GB
+  uint64_t cache_max_objects = 16;
+  uint32_t cache_full_ratio_micro = 60 * 10000; // 60%
+
+  bool dedup_cache_work() override;
+  bool dedup_evict(ObjectContextRef obc);
+  bool dedup_flush(ObjectContextRef obc);
+  void cache_hit_set_create();
+  void cache_hit_set_persist();
+  bool cache_choose_mode(OpRequestRef op = OpRequestRef());
 
   // agent
   boost::scoped_ptr<TierAgentState> agent_state;

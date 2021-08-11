@@ -274,6 +274,7 @@ OSDService::OSDService(OSD *osd, ceph::async::io_context_pool& poolctx) :
   flush_mode_high_count(0),
   agent_active(true),
   agent_thread(this),
+  dedup_cache_thread(this),
   agent_stop_flag(false),
   agent_timer(osd->client_messenger->cct, agent_timer_lock),
   last_recalibrate(ceph_clock_now()),
@@ -546,6 +547,7 @@ void OSDService::init()
   mono_timer.resume();
 
   agent_thread.create("osd_srv_agent");
+  dedup_cache_thread.create("dedup_cache");
 
   if (cct->_conf->osd_recovery_delay_start)
     defer_recovery(cct->_conf->osd_recovery_delay_start);
@@ -580,6 +582,21 @@ public:
     pg->agent_choose_mode_restart();
   }
 };
+
+void OSDService::dedup_cache_entry()
+{
+  dout(10) << __func__ << " start" << dendl;
+  while (agent_stop_flag == false) {
+    vector<PGRef> pgs;
+    osd->_get_pgs(&pgs);
+    int i = 0;
+    for (auto p : pgs) {
+      p->dedup_cache_work();
+      sleep(1);
+      i++;
+    }
+  }
+}
 
 void OSDService::agent_entry()
 {
@@ -663,6 +680,7 @@ void OSDService::agent_stop()
     agent_cond.notify_all();
   }
   agent_thread.join();
+  dedup_cache_thread.join();
 }
 
 // -------------------------------------
