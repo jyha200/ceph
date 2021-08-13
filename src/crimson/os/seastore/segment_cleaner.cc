@@ -224,6 +224,30 @@ void SegmentCleaner::close_segment(device_segment_t segment)
   mark_closed(segment);
 }
 
+SegmentCleaner::rewrite_cb_dirty_ret SegmentCleaner::rewrite_cb_dirty(
+  Transaction &t,
+  journal_seq_t limit)
+{
+  return trans_intr::make_interruptible(
+    ecb->get_next_dirty_extents(
+      limit,
+      config.journal_rewrite_per_cycle)
+  ).then_interruptible([=, &t](auto dirty_list) {
+    return seastar::do_with(
+      std::move(dirty_list),
+      [this, &t](auto &dirty_list) {
+	return trans_intr::do_for_each(
+	  dirty_list,
+	  [this, &t](auto &e) {
+	    logger().debug(
+	      "SegmentCleaner::rewrite_cb_dirty cleaning {}",
+	      *e);
+	    return ecb->rewrite_extent(t, e, true);
+	  });
+      });
+  });
+}
+
 SegmentCleaner::rewrite_dirty_ret SegmentCleaner::rewrite_dirty(
   Transaction &t,
   journal_seq_t limit)
@@ -268,25 +292,48 @@ SegmentCleaner::gc_cycle_ret SegmentCleaner::GCProcess::run()
 
 SegmentCleaner::gc_cycle_ret SegmentCleaner::do_gc_cycle()
 {
-  if (gc_should_trim_journal()) {
-    return gc_trim_journal(
-    ).handle_error(
-      crimson::ct_error::assert_all{
-	"GCProcess::run encountered invalid error in gc_trim_journal"
-      }
-    );
-  } else if (gc_should_reclaim_space()) {
-    return gc_reclaim_space(
-    ).handle_error(
-      crimson::ct_error::assert_all{
-	"GCProcess::run encountered invalid error in gc_reclaim_space"
-      }
-    );
+  if (journal->get_device_type() == RANDOM_BLOCK) {
+    if (journal->flush_should_run()) {
+      return gc_trim_cb_journal(
+        ).handle_error(
+          crimson::ct_error::assert_all{
+            "GCProcess::run encountered invalid error in gc_trim_cb_journal"
+          }
+          );
+    }
   } else {
-    return seastar::now();
+    if (gc_should_trim_journal()) {
+      return gc_trim_journal(
+          ).handle_error(
+            crimson::ct_error::assert_all{
+            "GCProcess::run encountered invalid error in gc_trim_journal"
+            }
+            );
+    } else if (gc_should_reclaim_space()) {
+      return gc_reclaim_space(
+          ).handle_error(
+            crimson::ct_error::assert_all{
+            "GCProcess::run encountered invalid error in gc_reclaim_space"
+            }
+            );
+    } else {
+      return seastar::now();
+    }
   }
 }
 
+SegmentCleaner::gc_trim_cb_journal_ret SegmentCleaner::gc_trim_cb_journal()
+{
+  return repeat_eagain([this] {
+    return ecb->with_transaction_intr(
+        Transaction::src_t::CLEANER, [this](auto& t) {
+      return rewrite_cb_dirty(t, get_dirty_tail()
+      ).si_then([this, &t] {
+        return ecb->submit_transaction_direct(t);
+      });
+    });
+  });
+}
 SegmentCleaner::gc_trim_journal_ret SegmentCleaner::gc_trim_journal()
 {
   return repeat_eagain([this] {

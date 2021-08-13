@@ -183,7 +183,8 @@ public:
   using rewrite_extent_ret = rewrite_extent_iertr::future<>;
   virtual rewrite_extent_ret rewrite_extent(
     Transaction &t,
-    CachedExtentRef extent) = 0;
+    CachedExtentRef extent,
+    bool ool = false) = 0;
 
   /**
    * delayed_update_mapping

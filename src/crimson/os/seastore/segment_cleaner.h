@@ -420,7 +420,8 @@ public:
     using rewrite_extent_ret = rewrite_extent_iertr::future<>;
     virtual rewrite_extent_ret rewrite_extent(
       Transaction &t,
-      CachedExtentRef extent) = 0;
+      CachedExtentRef extent,
+      bool ool) = 0;
 
     /**
      * get_extent_if_live
@@ -837,7 +838,7 @@ private:
 
     void maybe_wake_on_space_used() {
       if (cleaner.gc_should_run()) {
-	wake();
+        wake();
       }
     }
   } gc_process;
@@ -1047,7 +1048,12 @@ private:
    * True if gc should be running.
    */
   bool gc_should_run() const {
-    return gc_should_reclaim_space() || gc_should_trim_journal();
+    if (journal->get_device_type() == RANDOM_BLOCK) {
+        return journal->flush_should_run();
+    }
+    else {
+      return gc_should_reclaim_space() || gc_should_trim_journal();
+    }
   }
 
   void mark_closed(device_segment_t segment) {
