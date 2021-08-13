@@ -184,7 +184,7 @@ class SegmentedAllocator : public ExtentAllocator {
       SegmentProvider& sp,
       SegmentManager& sm,
       LBAManager& lba_manager,
-      Journal& journal,
+      SegmentJournal& journal,
       Cache& cache)
       : segment_provider(sp),
         segment_manager(sm),
@@ -235,7 +235,7 @@ class SegmentedAllocator : public ExtentAllocator {
     std::list<open_segment_wrapper_ref> open_segments;
     segment_off_t allocated_to = 0;
     LBAManager& lba_manager;
-    Journal& journal;
+    SegmentJournal& journal;
     crimson::condition_variable segment_rotation_guard;
     seastar::gate writer_guard;
     bool rolling_segment = false;
@@ -246,7 +246,7 @@ public:
     SegmentProvider& sp,
     SegmentManager& sm,
     LBAManager& lba_manager,
-    Journal& journal,
+    SegmentJournal& journal,
     Cache& cache);
 
   Writer &get_writer(ool_placement_hint_t hint) {
@@ -283,7 +283,7 @@ private:
   SegmentManager& segment_manager;
   std::vector<Writer> writers;
   LBAManager& lba_manager;
-  Journal& journal;
+  SegmentJournal& journal;
   Cache& cache;
 };
 

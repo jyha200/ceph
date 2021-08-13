@@ -66,7 +66,7 @@ struct record_validator_t {
 struct journal_test_t : seastar_test_suite_t, SegmentProvider {
   segment_manager::EphemeralSegmentManagerRef segment_manager;
   WritePipeline pipeline;
-  std::unique_ptr<Journal> journal;
+  std::unique_ptr<SegmentJournal> journal;
 
   std::vector<record_validator_t> records;
 
@@ -93,7 +93,7 @@ struct journal_test_t : seastar_test_suite_t, SegmentProvider {
   void update_journal_tail_committed(journal_seq_t paddr) final {}
 
   seastar::future<> set_up_fut() final {
-    journal.reset(new Journal(*segment_manager, *scanner));
+    journal.reset(new SegmentJournal(*segment_manager, *scanner));
     journal->set_segment_provider(this);
     journal->set_write_pipeline(&pipeline);
     return segment_manager->init(
@@ -110,7 +110,7 @@ struct journal_test_t : seastar_test_suite_t, SegmentProvider {
   auto replay(T &&f) {
     return journal->close(
     ).safe_then([this, f=std::move(f)]() mutable {
-      journal.reset(new Journal(*segment_manager, *scanner));
+      journal.reset(new SegmentJournal(*segment_manager, *scanner));
       journal->set_segment_provider(this);
       journal->set_write_pipeline(&pipeline);
       return seastar::do_with(

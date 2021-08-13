@@ -28,7 +28,7 @@ struct btree_lba_manager_test :
   public seastar_test_suite_t, SegmentProvider {
   segment_manager::EphemeralSegmentManagerRef segment_manager;
   ScannerRef scanner;
-  Journal journal;
+  SegmentJournal journal;
   Cache cache;
   BtreeLBAManagerRef lba_manager;
 
