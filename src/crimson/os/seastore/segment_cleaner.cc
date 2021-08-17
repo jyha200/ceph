@@ -148,8 +148,8 @@ SegmentCleaner::SegmentCleaner(
   ScannerRef&& scr,
   bool detailed)
   : detailed(detailed),
-    config(config),
     scanner(std::move(scr)),
+    config(config),
     gc_process(*this)
 {
   register_metrics();
@@ -413,6 +413,51 @@ SegmentCleaner::init_segments_ret SegmentCleaner::init_segments() {
 	  std::move(segments));
     });
   });
+}
+
+
+CBJournalCleaner::rewrite_dirty_ret CBJournalCleaner::rewrite_dirty(
+  Transaction &t,
+  journal_seq_t limit)
+{
+  return trans_intr::make_interruptible(
+    ecb->get_next_dirty_extents(
+      limit,
+      config.journal_rewrite_per_cycle)
+  ).then_interruptible([=, &t](auto dirty_list) {
+    return seastar::do_with(
+      std::move(dirty_list),
+      [this, &t](auto &dirty_list) {
+	return trans_intr::do_for_each(
+	  dirty_list,
+	  [this, &t](auto &e) {
+	    logger().debug(
+	      "CBJournalCleaner::rewrite_dirty cleaning {}",
+	      *e);
+            // Flushed logs are written to RBM area through ool write procedure.
+            bool ool = true;
+	    return ecb->rewrite_extent(t, e, ool);
+	  });
+      });
+  });
+}
+
+CBJournalCleaner::gc_cycle_ret CBJournalCleaner::do_gc_cycle()
+{
+  // GC of CBJournal requires only trimming journal.
+  // gc_reclaim_space() is needless because RBM area is managed in
+  // in-place update manner.
+  if (gc_should_run()) {
+    return gc_trim_journal(
+        ).handle_error(
+          crimson::ct_error::assert_all{
+          "CBJournal GCProcess::run encountered invalid error in gc_trim_cb_journal"
+          }
+          );
+  }
+  else {
+    return seastar::now();
+  }
 }
 
 }

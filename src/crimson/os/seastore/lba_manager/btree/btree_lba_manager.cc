@@ -371,7 +371,8 @@ BtreeLBAManager::scan_mapped_space_ret BtreeLBAManager::scan_mapped_space(
 
 BtreeLBAManager::rewrite_extent_ret BtreeLBAManager::rewrite_extent(
   Transaction &t,
-  CachedExtentRef extent)
+  CachedExtentRef extent,
+  bool ool)
 {
   assert(!extent->has_been_invalidated());
   assert(!extent->is_logical());
@@ -406,6 +407,8 @@ BtreeLBAManager::rewrite_extent_ret BtreeLBAManager::rewrite_extent(
      */
     nlba_extent->resolve_relative_addrs(
       make_record_relative_paddr(0) - nlba_extent->get_paddr());
+
+    nlba_extent->ool = ool;
 
     logger().debug(
       "{}: rewriting {} into {}",

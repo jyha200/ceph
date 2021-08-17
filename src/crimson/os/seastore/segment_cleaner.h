@@ -330,7 +330,8 @@ public:
     using rewrite_extent_ret = rewrite_extent_iertr::future<>;
     virtual rewrite_extent_ret rewrite_extent(
       Transaction &t,
-      CachedExtentRef extent) = 0;
+      CachedExtentRef extent,
+      bool ool = false) = 0;
 
     /**
      * get_extent_if_live
@@ -378,7 +379,6 @@ public:
 
 private:
   const bool detailed;
-  const config_t config;
 
   segment_id_t num_segments = 0;
   size_t segment_size = 0;
@@ -398,6 +398,13 @@ private:
   seastar::metrics::metric_group metrics;
   void register_metrics();
 
+
+  /// populated if there is an IO blocked on hard limits
+  std::optional<seastar::promise<>> blocked_io_wake;
+
+protected:
+  const config_t config;
+
   /// target journal_tail for next fresh segment
   journal_seq_t journal_tail_target;
 
@@ -408,9 +415,6 @@ private:
   journal_seq_t journal_head;
 
   ExtentCallbackInterface *ecb = nullptr;
-
-  /// populated if there is an IO blocked on hard limits
-  std::optional<seastar::promise<>> blocked_io_wake;
 
 public:
   SegmentCleaner(
@@ -611,21 +615,22 @@ public:
   using work_ertr = ExtentCallbackInterface::extent_mapping_ertr;
   using work_iertr = ExtentCallbackInterface::extent_mapping_iertr;
 
-private:
+protected:
 
   // journal status helpers
 
   /**
-   * rewrite_dirty
+   * :rewrite_dirty
    *
    * Writes out dirty blocks dirtied earlier than limit.
    */
   using rewrite_dirty_iertr = work_iertr;
   using rewrite_dirty_ret = rewrite_dirty_iertr::future<>;
-  rewrite_dirty_ret rewrite_dirty(
+  virtual rewrite_dirty_ret rewrite_dirty(
     Transaction &t,
     journal_seq_t limit);
 
+private:
   journal_seq_t get_dirty_tail() const {
     auto ret = journal_head;
     ret.segment_seq -= std::min(
@@ -652,7 +657,10 @@ private:
    *
    * Background gc process.
    */
+protected:
   using gc_cycle_ret = seastar::future<>;
+  virtual gc_cycle_ret do_gc_cycle();
+
   class GCProcess {
     std::optional<gc_cycle_ret> process_join;
 
@@ -725,12 +733,11 @@ private:
     Scanner::scan_extents_ertr
     >;
 
-  gc_cycle_ret do_gc_cycle();
-
   using gc_trim_journal_ertr = gc_ertr;
   using gc_trim_journal_ret = gc_trim_journal_ertr::future<>;
   gc_trim_journal_ret gc_trim_journal();
 
+private:
   using gc_reclaim_space_ertr = gc_ertr;
   using gc_reclaim_space_ret = gc_reclaim_space_ertr::future<>;
   gc_reclaim_space_ret gc_reclaim_space();
@@ -925,7 +932,7 @@ private:
    *
    * True if gc should be running.
    */
-  bool gc_should_run() const {
+  virtual bool gc_should_run() const {
     return gc_should_reclaim_space() || gc_should_trim_journal();
   }
 
@@ -966,5 +973,36 @@ private:
   }
 };
 using SegmentCleanerRef = std::unique_ptr<SegmentCleaner>;
+
+/* CBJournalCleaner
+ *
+ * Manage flush of CBJournal.
+ * Journal logs are flushed to RBM area with ool flag.
+ * Reuse most of existing GC code of SegmentCleaner.
+ * Differences from SegmentCleaner are the triggering condition and write
+ * procedure of GC.
+ */ 
+class CBJournalCleaner : public SegmentCleaner {
+public:
+  rewrite_dirty_ret rewrite_dirty(
+      Transaction &t,
+      journal_seq_t limit) override;
+
+  gc_cycle_ret do_gc_cycle() override;
+
+  bool gc_should_run() const override {
+    // Triggering condition of GC is determined by the amount of un-committed
+    // journal logs.
+    segment_seq_t diff = journal_tail_target.segment_seq - journal_head.segment_seq;
+    return diff >= journal_flush_threshold;
+  }
+
+private:
+  static const int DEFAULT_JOURNAL_FLUSH_THRESHOLD = 1;
+
+  // TODO : set flush threshold from input 
+  segment_seq_t journal_flush_threshold = DEFAULT_JOURNAL_FLUSH_THRESHOLD;
+};
+using CBJournalCleanerRef = std::unique_ptr<CBJournalCleaner>;
 
 }

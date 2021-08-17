@@ -108,7 +108,8 @@ public:
 
   rewrite_extent_ret rewrite_extent(
     Transaction &t,
-    CachedExtentRef extent) final;
+    CachedExtentRef extent,
+    bool ool = false) final;
 
   update_le_mapping_ret update_mapping(
     Transaction& t,
