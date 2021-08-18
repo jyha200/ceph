@@ -2374,7 +2374,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
       cache_hit_set->insert(oid);
       op->hitset_inserted = true;
       if (cache_hit_set->is_full() ||
-          cache_hit_set_start_stamp + cache_hit_set_period <= m->get_recv_stamp()) {
+          cache_hit_set_start_stamp + pool.info.cache_hit_set_period <= m->get_recv_stamp()) {
         cache_hit_set_persist();
       }
     }
@@ -14578,7 +14578,6 @@ void PrimaryLogPG::cache_hit_set_persist()
 {
   dout(1) << __func__  << " " << __LINE__ << dendl;
   bufferlist bl;
-  unsigned max = cache_hit_set_count;
 
   utime_t now = ceph_clock_now();
   hobject_t oid;
@@ -14639,8 +14638,8 @@ void PrimaryLogPG::cache_hit_set_persist()
   dout(1) << __func__  << " " << __LINE__ << dendl;
     cache_state->add_hit_set(new_hset.begin, hit_set);
     uint32_t size = cache_state->hit_set_map.size();
-    if (size >= cache_hit_set_count) {
-      size = cache_hit_set_count > 0 ? cache_hit_set_count - 1: 0;
+    if (size >= pool.info.cache_hit_set_count) {
+      size = pool.info.cache_hit_set_count > 0 ? pool.info.cache_hit_set_count - 1: 0;
   dout(1) << __func__  << " " << __LINE__ << dendl;
     }
     //hit_set_in_memory_trim(size);
@@ -14890,7 +14889,7 @@ void PrimaryLogPG::cache_hit_set_create() {
     static_cast<BloomHitSet::Params*>(params.impl.get());
 
   // convert false positive rate so it holds up across the full period
-  p->set_fpp(p->get_fpp() / cache_hit_set_count);
+  p->set_fpp(p->get_fpp() / pool.info.cache_hit_set_count);
   if (p->get_fpp() <= 0.0)
     p->set_fpp(.01);  // fpp cannot be zero!
 
@@ -14901,7 +14900,7 @@ void PrimaryLogPG::cache_hit_set_create() {
     unsigned unique = cache_hit_set->approx_unique_insert_count();
     dout(20) << __func__ << " previous set had approx " << unique
       << " unique items over " << dur << " seconds" << dendl;
-    p->target_size = (double)unique * cache_hit_set_period
+    p->target_size = (double)unique * pool.info.cache_hit_set_period
       / (double)dur;
   }
   if (p->target_size <
@@ -15680,24 +15679,24 @@ bool PrimaryLogPG::cache_choose_mode(OpRequestRef op)
   // get dirty, full ratios
   uint64_t dirty_micro = 0;
   uint64_t full_micro = 0;
-  if (cache_max_bytes && num_user_objects > 0) {
+  if (pool.info.cache_max_bytes && num_user_objects > 0) {
     uint64_t avg_size = num_user_bytes / num_user_objects;
     dirty_micro =
       num_dirty * avg_size * 1000000 /
-      std::max<uint64_t>(cache_max_bytes / divisor, 1);
+      std::max<uint64_t>(pool.info.cache_max_bytes / divisor, 1);
     full_micro =
       num_user_objects * avg_size * 1000000 /
-      std::max<uint64_t>(cache_max_bytes / divisor, 1);
+      std::max<uint64_t>(pool.info.cache_max_bytes / divisor, 1);
   }
-  if (cache_max_objects > 0) {
+  if (pool.info.cache_max_objects > 0) {
     uint64_t dirty_objects_micro =
       num_dirty * 1000000 /
-      std::max<uint64_t>(cache_max_objects / divisor, 1);
+      std::max<uint64_t>(pool.info.cache_max_objects / divisor, 1);
     if (dirty_objects_micro > dirty_micro)
       dirty_micro = dirty_objects_micro;
     uint64_t full_objects_micro =
       num_user_objects * 1000000 /
-      std::max<uint64_t>(cache_max_objects / divisor, 1);
+      std::max<uint64_t>(pool.info.cache_max_objects / divisor, 1);
     if (full_objects_micro > full_micro)
       full_micro = full_objects_micro;
   }
@@ -15706,7 +15705,7 @@ bool PrimaryLogPG::cache_choose_mode(OpRequestRef op)
 	   << dendl;
 
   // evict mode
-  uint64_t evict_target = cache_full_ratio_micro;
+  uint64_t evict_target = pool.info.cache_full_ratio_micro;
   uint64_t evict_slop = (float)evict_target * cct->_conf->osd_agent_slop;
   if (cache_state->evict_mode == TierAgentState::EVICT_MODE_IDLE)
     evict_target += evict_slop;

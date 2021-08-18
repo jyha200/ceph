@@ -1527,6 +1527,13 @@ public:
     return stretch_set_can_peer(swant, osdmap, out);
   }
 
+  // dedup cache
+  uint32_t cache_hit_set_period = 3600; // 3600 seconds
+  uint32_t cache_hit_set_count = 1;
+  uint64_t cache_max_bytes = 1073741824; // 1GB
+  uint64_t cache_max_objects = 16384;
+  uint32_t cache_full_ratio_micro = 60 * 10000; // 60%
+
   uint64_t target_max_bytes = 0;   ///< tiering: target max pool size
   uint64_t target_max_objects = 0; ///< tiering: target max pool size
 
