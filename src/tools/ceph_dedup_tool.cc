@@ -566,6 +566,7 @@ private:
   void add_fingerprint(chunk_t& chunk);
   void broadcast_chunk_info(string& fingerprint, size_t chunk_size);
   bool check_object_dedup(size_t dedup_size, size_t total_size);
+  bool is_dirty(ObjectItem& object);
   
   Rados rados;
   IoCtx chunk_io_ctx;
@@ -624,7 +625,9 @@ void SampleDedup::crawl() {
       std::set<size_t> sampled_indexes = sample_object(objects.size());
       for (size_t index : sampled_indexes) {
         ObjectItem target = objects[index];
-        try_dedup_and_accumulate_result(target);
+        if (is_dirty(target)) {
+          try_dedup_and_accumulate_result(target);
+        }
       }
     }
     for (auto& duplicable_chunk : duplicable_chunks) {
@@ -633,6 +636,15 @@ void SampleDedup::crawl() {
   }
   catch (std::exception& e) {
   }
+}
+
+bool SampleDedup::is_dirty(ObjectItem& object) {
+  ObjectReadOperation op;
+  bool dirty = false;
+  int r = -1;
+  op.is_dirty(&dirty, &r);
+  io_ctx.operate(object.oid, &op, NULL);
+  return dirty;
 }
 
 void SampleDedup::prepare_rados() {
@@ -864,7 +876,6 @@ void SampleDedup::mark_dedup(chunk_t& chunk) {
     ObjectWriteOperation wop;
     wop.write_full(bl);
     res = chunk_io_ctx.operate(chunk.fingerprint, &wop);
-    assert(res == 0);  
   }                             
 
   ObjectReadOperation op;
@@ -879,7 +890,6 @@ void SampleDedup::mark_dedup(chunk_t& chunk) {
       chunk.oid,
       &op,
       NULL);
-  assert(res == 0);
   broadcast_chunk_info(chunk.fingerprint, chunk.size);
 }
 
@@ -1383,15 +1393,6 @@ int make_crawling_daemon(const map<string, string> &opts,
       << base_pool_name << ": "
       << cpp_strerror(ret) << std::endl;
     return -EINVAL;
-  }
-
-  {
-    bufferlist bl;
-    bl.append("dummy");
-    ObjectWriteOperation op;
-    op.write_full(bl);
-    int res = chunk_io_ctx.operate(DUMMY_NAME, &op);
-    assert(res == 0);
   }
 
   while (true) {
