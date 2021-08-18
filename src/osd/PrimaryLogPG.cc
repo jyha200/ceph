@@ -10489,7 +10489,6 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc, bool force)
   const object_info_t& oi = obc->obs.oi;
   const hobject_t& soid = oi.soid;
 
-  dout(1) << __func__ << __LINE__<<dendl;
   ceph_assert(obc->is_blocked());
   if (oi.size == 0) {
     // evicted 
@@ -10510,11 +10509,11 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc, bool force)
   std::map<uint64_t, bufferlist> chunks; 
   int r = do_cdc(oi, mop->new_manifest.chunk_map, chunks);
   if (r < 0) {
-    dout(1) << __func__ << "fail cdc"<<dendl;
+    dout(20) << __func__ << "fail cdc"<<dendl;
     return r;
   }
   if (!chunks.size()) {
-    dout(1) << __func__ << "no chunks"<<dendl;
+    dout(20) << __func__ << "no chunks"<<dendl;
     return 0;
   }
 
@@ -10563,15 +10562,15 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc, bool force)
       mop->chunks[target] = make_pair(p.first, p.second.length());
       mop->num_chunks++;
       mop->tids[p.first] = tid;
-      dout(1) << __func__ << " oid: " << soid << " tid: " << tid
+      dout(20) << __func__ << " oid: " << soid << " tid: " << tid
         << " target: " << target << " offset: " << p.first
         << " length: " << p.second.length() << dendl;
     }
   }
-  dout(1) << __func__ << "finish chunk dedup"<<dendl;
+  dout(20) << __func__ << "finish chunk dedup"<<dendl;
 
   if (normal_write_bl.length() > 0) {
-  dout(1) << __func__ << "do normal write"<<dendl;
+  dout(20) << __func__ << "do normal write"<<dendl;
     unsigned flags = CEPH_OSD_FLAG_IGNORE_CACHE | CEPH_OSD_FLAG_IGNORE_OVERLAY |
       CEPH_OSD_FLAG_RWORDERED;
     // make normal write data object and decide its location
@@ -10585,21 +10584,18 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc, bool force)
     mop->chunks[normal_write_target] = make_pair(OFFSET_NON_CHUNK_DATA, normal_write_bl.length());
     mop->num_chunks++;
     mop->tids[OFFSET_NON_CHUNK_DATA] = tid;
-    dout(1) << __func__ << " oid: " << soid << " tid: " << tid
+    dout(20) << __func__ << " oid: " << soid << " tid: " << tid
       << " normal_write_target: " << normal_write_target << " offset: " << OFFSET_NON_CHUNK_DATA
       << " length: " << normal_write_bl.length() << dendl;
   }
 
   if (mop->tids.size()) {
-  dout(1) << __func__ << __LINE__<<dendl;
     manifest_ops[soid] = mop;
     manifest_ops[soid]->op = op;
   } else {
-  dout(1) << __func__ << __LINE__<<dendl;
     // size == 0
     return 0;
   }
-  dout(1) << __func__ << "dedup done"<<dendl;
 
   return -EINPROGRESS;
 }
@@ -14538,7 +14534,6 @@ void PrimaryLogPG::hit_set_create()
     dout(10) << __func__ << " target_size " << p->target_size
 	     << " fpp " << p->get_fpp() << dendl;
   }
-  dout(1) << __func__ << "hit_set_type " << params.get_type() << dendl;
   hit_set.reset(new HitSet(params));
   hit_set_start_stamp = now;
 }
@@ -14576,7 +14571,6 @@ bool PrimaryLogPG::hit_set_apply_log()
 
 void PrimaryLogPG::cache_hit_set_persist()
 {
-  dout(1) << __func__  << " " << __LINE__ << dendl;
   bufferlist bl;
 
   utime_t now = ceph_clock_now();
@@ -14595,7 +14589,6 @@ void PrimaryLogPG::cache_hit_set_persist()
     if (m_scrubber->write_blocked_by_scrub(aoid))
       return;
   }
-  dout(1) << __func__  << " " << __LINE__ << dendl;
 
   // If backfill is in progress and we could possibly overlap with the
   // hit_set_* objects, back off.  Since these all have
@@ -14616,7 +14609,6 @@ void PrimaryLogPG::cache_hit_set_persist()
     }
   }
 
-  dout(1) << __func__  << " " << __LINE__ << dendl;
 
   pg_hit_set_info_t new_hset = pg_hit_set_info_t(pool.info.use_gmt_hitset);
   new_hset.begin = cache_hit_set_start_stamp;
@@ -14629,18 +14621,14 @@ void PrimaryLogPG::cache_hit_set_persist()
   // If the current object is degraded we skip this persist request
   if (m_scrubber->write_blocked_by_scrub(oid))
     return;
-  dout(1) << __func__  << " " << __LINE__ << dendl;
 
   dout(20) << __func__ << " archive " << oid << dendl;
 
-  dout(1) << __func__  << " " << __LINE__ << dendl;
   if (cache_state) {
-  dout(1) << __func__  << " " << __LINE__ << dendl;
     cache_state->add_hit_set(new_hset.begin, hit_set);
     uint32_t size = cache_state->hit_set_map.size();
     if (size >= pool.info.cache_hit_set_count) {
       size = pool.info.cache_hit_set_count > 0 ? pool.info.cache_hit_set_count - 1: 0;
-  dout(1) << __func__  << " " << __LINE__ << dendl;
     }
     //hit_set_in_memory_trim(size);
     {
@@ -14652,7 +14640,6 @@ void PrimaryLogPG::cache_hit_set_persist()
 
   cache_hit_set_create();
 
-  dout(1) << __func__  << " " << __LINE__ << dendl;
 }
 
 void PrimaryLogPG::hit_set_persist()
@@ -14915,7 +14902,6 @@ void PrimaryLogPG::cache_hit_set_create() {
 
   dout(10) << __func__ << " target_size " << p->target_size
     << " fpp " << p->get_fpp() << dendl;
-  dout(1) << __func__ << "hit_set_type " << params.get_type() << dendl;
   cache_hit_set.reset(new HitSet(params));
   cache_hit_set_start_stamp = now;
 }
@@ -14927,11 +14913,9 @@ bool PrimaryLogPG::dedup_cache_work()
     return false;
   }
 
-  dout(1) << __func__ << " start " << __LINE__ << dendl;
-
   std::scoped_lock locker{*this};
   if (!cache_state) {
-    dout(1) << __func__ << " no agent state, create one" << dendl;
+    dout(20) << __func__ << " no agent state, create one" << dendl;
     cache_state.reset(new TierAgentState);
 
     // choose random starting position
@@ -14944,7 +14928,7 @@ bool PrimaryLogPG::dedup_cache_work()
     cache_choose_mode();
 
     cache_hit_set_create();
-    dout(1) << __func__ << " allocated new state, position "
+    dout(20) << __func__ << " allocated new state, position "
 	    << cache_state->position << dendl;
     return true;
   }
@@ -14954,7 +14938,6 @@ bool PrimaryLogPG::dedup_cache_work()
 
   //agent_load_hit_sets();
   {
-      dout(1) << __func__ << dendl;
     if (cache_state->hit_set_map.size() < info.hit_set.history.size()) {
       for (auto p = info.hit_set.history.begin();
           p != info.hit_set.history.end(); ++p) {
@@ -14990,9 +14973,6 @@ bool PrimaryLogPG::dedup_cache_work()
           cache_state->add_hit_set(p->begin.sec(), hs);
         }
       }
-    }
-    else {
-      dout(1) << __func__ << dendl;
     }
   }
 
@@ -15034,30 +15014,26 @@ bool PrimaryLogPG::dedup_cache_work()
 
 bool PrimaryLogPG::dedup_evict(ObjectContextRef obc)
 {
-  dout(1) << __func__ << " start "<< obc->obs.oi << dendl;
+  dout(20) << __func__ << " start "<< obc->obs.oi << dendl;
   const hobject_t& soid = obc->obs.oi.soid;
- /* if (obc->obs.oi.is_dirty()) {
-    dout(1) << __func__ << " skip (dirty) " << obc->obs.oi << dendl;
-    return false;
-  }*/
 
   if (!obc->obs.oi.watchers.empty()) {
-    dout(1) << __func__ << " skip (watchers) " << obc->obs.oi << dendl;
+    dout(20) << __func__ << " skip (watchers) " << obc->obs.oi << dendl;
     return false;
   }
   if (obc->is_blocked()) {
-    dout(1) << __func__ << " skip (blocked) " << obc->obs.oi << dendl;
+    dout(20) << __func__ << " skip (blocked) " << obc->obs.oi << dendl;
     return false;
   }
   if (obc->obs.oi.is_cache_pinned()) {
-    dout(1) << __func__ << " skip (cache_pinned) " << obc->obs.oi << dendl;
+    dout(20) << __func__ << " skip (cache_pinned) " << obc->obs.oi << dendl;
     return false;
   }
 
   if (soid.snap == CEPH_NOSNAP) {
     int result = _verify_no_head_clones(soid, obc->ssc->snapset);
     if (result < 0) {
-      dout(1) << __func__ << " skip (clones) " << obc->obs.oi << dendl;
+      dout(20) << __func__ << " skip (clones) " << obc->obs.oi << dendl;
       return false;
     }
   }
@@ -15071,7 +15047,7 @@ bool PrimaryLogPG::dedup_evict(ObjectContextRef obc)
     ob_local_mtime = obc->obs.oi.mtime;
   }
   if (ob_local_mtime + utime_t(pool.info.cache_min_evict_age, 0) > now) {
-    dout(1) << __func__ << " skip (too young) " << obc->obs.oi << dendl;
+    dout(20) << __func__ << " skip (too young) " << obc->obs.oi << dendl;
     osd->logger->inc(l_osd_agent_skip);
     return false;
   }
@@ -15083,7 +15059,6 @@ bool PrimaryLogPG::dedup_evict(ObjectContextRef obc)
     //agent_estimate_temp(soid, &temp);
     temp = 0;
     if (cache_hit_set->contains(soid)) {
-      dout(1) << __func__ << " hit5_set contain " << dendl;
       temp = 1000000;
     }
     unsigned i = 0;
@@ -15099,56 +15074,20 @@ bool PrimaryLogPG::dedup_evict(ObjectContextRef obc)
   }
   cache_state->temp_hist.add(temp);
   cache_state->temp_hist.get_position_micro(temp, &temp_lower, &temp_upper);
-  dout(1) << __func__ << " temp lower " << temp_lower << " temp upper " << temp_upper << dendl;
-  dout(1) << __func__ << " evict_effort " << cache_state->evict_effort << dendl;
+  dout(20) << __func__ << " temp lower " << temp_lower << " temp upper " << temp_upper
+    << __func__ << " evict_effort " << cache_state->evict_effort << dendl;
 
   if (1000000 - temp_upper >= cache_state->evict_effort) {
-    dout(1) << __func__ << " still hot " << obc->obs.oi << dendl;
+    dout(20) << __func__ << " still hot " << obc->obs.oi << dendl;
     return false;
   }
 
   if (obc->obs.oi.is_dirty()) {
-    dout(1) << __func__ << " flush before evicting " << obc->obs.oi << dendl;
+    dout(20) << __func__ << " flush before evicting " << obc->obs.oi << dendl;
     dedup_flush(obc);
     return false;
   }
   return false;
-
-  dout(1) << __func__ << " evicting " << obc->obs.oi << dendl;
-  OpContextUPtr ctx = simple_opc_create(obc);
-
-  auto null_op_req = OpRequestRef();
-  if (!ctx->lock_manager.get_lock_type(
-	RWState::RWWRITE,
-	obc->obs.oi.soid,
-	obc,
-	null_op_req)) {
-    close_op_ctx(ctx.release());
-    dout(1) << __func__ << " skip (cannot get lock) " << obc->obs.oi << dendl;
-    return false;
-  }
-
-  osd->agent_start_evict_op();
-  ctx->register_on_finish(
-    [this]() {
-      osd->agent_finish_evict_op();
-    });
-
-  ctx->at_version = get_next_version();
-  ceph_assert(ctx->new_obs.exists);
-  int r = _delete_oid(ctx.get(), true, false);
-  if (obc->obs.oi.is_omap())
-    ctx->delta_stats.num_objects_omap--;
-  ctx->delta_stats.num_evict++;
-  ctx->delta_stats.num_evict_kb += shift_round_up(obc->obs.oi.size, 10);
-  if (obc->obs.oi.is_dirty())
-    --ctx->delta_stats.num_objects_dirty;
-  ceph_assert(r == 0);
-  finish_ctx(ctx.get(), pg_log_entry_t::DELETE);
-  simple_opc_submit(std::move(ctx));
-  osd->logger->inc(l_osd_tier_evict);
-  osd->logger->inc(l_osd_agent_evict);
-  return true;
 }
 
 bool PrimaryLogPG::dedup_flush(ObjectContextRef obc) {
@@ -15172,24 +15111,24 @@ bool PrimaryLogPG::dedup_flush(ObjectContextRef obc) {
   }
   bool evict_mode_full =
     (cache_state->evict_mode == TierAgentState::EVICT_MODE_FULL);
-  dout(1) << __func__ << " evictmode " << evict_mode_full <<
+  dout(20) << __func__ << " evictmode " << evict_mode_full <<
     " ob local mtime " << ob_local_mtime << " flush age " <<
      utime_t(pool.info.cache_min_flush_age,0) << " now " << now << dendl;
   if (!evict_mode_full &&
       obc->obs.oi.soid.snap == CEPH_NOSNAP &&  // snaps immutable; don't delay
       (ob_local_mtime + utime_t(pool.info.cache_min_flush_age, 0) > now)) {
-    dout(1) << __func__ << " skip (too young) " << obc->obs.oi << dendl;
+    dout(20) << __func__ << " skip (too young) " << obc->obs.oi << dendl;
     osd->logger->inc(l_osd_agent_skip);
     return false;
   }
 
   if (osd->agent_is_active_oid(obc->obs.oi.soid)) {
-    dout(1) << __func__ << " skip (flushing) " << obc->obs.oi << dendl;
+    dout(20) << __func__ << " skip (flushing) " << obc->obs.oi << dendl;
     osd->logger->inc(l_osd_agent_skip);
     return false;
   }
 
-  dout(1) << __func__ << " flushing " << obc->obs.oi << dendl;
+  dout(20) << __func__ << " flushing " << obc->obs.oi << dendl;
 
   // FIXME: flush anything dirty, regardless of what distribution of
   // ages we expect.
@@ -15206,7 +15145,7 @@ bool PrimaryLogPG::dedup_flush(ObjectContextRef obc) {
     on_flush, true);
   if (result != -EINPROGRESS) {
     on_flush();
-    dout(1) << __func__ << " start_flush() failed " << obc->obs.oi
+    dout(20) << __func__ << " start_flush() failed " << obc->obs.oi
       << " with " << result << dendl;
     osd->logger->inc(l_osd_agent_skip);
     return false;
@@ -15700,7 +15639,7 @@ bool PrimaryLogPG::cache_choose_mode(OpRequestRef op)
     if (full_objects_micro > full_micro)
       full_micro = full_objects_micro;
   }
-  dout(1) << __func__ << " dirty " << ((float)dirty_micro / 1000000.0)
+  dout(20) << __func__ << " dirty " << ((float)dirty_micro / 1000000.0)
 	   << " full " << ((float)full_micro / 1000000.0)
 	   << dendl;
 
@@ -15733,10 +15672,10 @@ bool PrimaryLogPG::cache_choose_mode(OpRequestRef op)
     if (evict_effort < inc)
       evict_effort = inc;
     ceph_assert(evict_effort >= inc && evict_effort <= 1000000);
-    dout(1) << __func__ << " evict_effort " << was << " quantized by " << inc << " to " << evict_effort << dendl;
+    dout(20) << __func__ << " evict_effort " << was << " quantized by " << inc << " to " << evict_effort << dendl;
   }
 
-  dout(1) << __func__ << " full_micro " << full_micro
+  dout(20) << __func__ << " full_micro " << full_micro
            << " evict_target " << evict_target
 	   << " evict_effort  " << evict_effort
 	   << dendl;
