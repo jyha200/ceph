@@ -15682,7 +15682,6 @@ bool PrimaryLogPG::cache_choose_mode(OpRequestRef op)
   }
 
   skip_calc:
-  bool old_idle = cache_state->is_idle();
   if (evict_mode != cache_state->evict_mode) {
     dout(5) << __func__ << " evict_mode "
 	    << TierAgentState::get_evict_mode_name(cache_state->evict_mode)
@@ -15717,7 +15716,6 @@ bool PrimaryLogPG::cache_choose_mode(OpRequestRef op)
       });
     cache_state->evict_mode = evict_mode;
   }
-  uint64_t old_effort = cache_state->evict_effort;
   if (evict_effort != cache_state->evict_effort) {
     dout(5) << __func__ << " evict_effort "
 	    << ((float)cache_state->evict_effort / 1000000.0)

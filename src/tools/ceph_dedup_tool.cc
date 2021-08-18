@@ -503,9 +503,6 @@ void ChunkScrub::print_status(Formatter *f, ostream &out)
   }
 }
 
-
-static const char* DUMMY_NAME = "qwerasdf_Dummy_chunk_object";
-
 class SampleDedup : public CrawlerThread
 {
 public:
@@ -860,7 +857,6 @@ void SampleDedup::try_flush() {
 }
 
 void SampleDedup::mark_dedup(chunk_t& chunk) {
-  int res = 0;
   if (debug) {
     cout << "set chunk " << chunk.oid << " fp " << chunk.fingerprint << std::endl;
   }
@@ -875,7 +871,7 @@ void SampleDedup::mark_dedup(chunk_t& chunk) {
     bl.append(chunk.data);
     ObjectWriteOperation wop;
     wop.write_full(bl);
-    res = chunk_io_ctx.operate(chunk.fingerprint, &wop);
+    chunk_io_ctx.operate(chunk.fingerprint, &wop);
   }                             
 
   ObjectReadOperation op;
@@ -886,7 +882,7 @@ void SampleDedup::mark_dedup(chunk_t& chunk) {
       chunk.fingerprint,
       0,
       CEPH_OSD_OP_FLAG_WITH_REFERENCE);
-  res = io_ctx.operate(
+  io_ctx.operate(
       chunk.oid,
       &op,
       NULL);
