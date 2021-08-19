@@ -1923,6 +1923,11 @@ void pg_pool_t::encode(ceph::buffer::list& bl, uint64_t features) const
     encode(hit_set_period, bl);
     encode(hit_set_count, bl);
     encode(stripe_width, bl);
+    encode(cache_hit_set_period, bl);
+    encode(cache_hit_set_count, bl);
+    encode(cache_max_bytes, bl);
+    encode(cache_max_objects, bl);
+    encode(cache_full_ratio_micro, bl);
     encode(target_max_bytes, bl);
     encode(target_max_objects, bl);
     encode(cache_target_dirty_ratio_micro, bl);
@@ -1989,6 +1994,11 @@ void pg_pool_t::encode(ceph::buffer::list& bl, uint64_t features) const
   encode(hit_set_period, bl);
   encode(hit_set_count, bl);
   encode(stripe_width, bl);
+  encode(cache_hit_set_period, bl);
+  encode(cache_hit_set_count, bl);
+  encode(cache_max_bytes, bl);
+  encode(cache_max_objects, bl);
+  encode(cache_full_ratio_micro, bl);
   encode(target_max_bytes, bl);
   encode(target_max_objects, bl);
   encode(cache_target_dirty_ratio_micro, bl);
@@ -2130,6 +2140,11 @@ void pg_pool_t::decode(ceph::buffer::list::const_iterator& bl)
     set_stripe_width(0);
   }
   if (struct_v >= 13) {
+    decode(cache_hit_set_period, bl);
+    decode(cache_hit_set_count, bl);
+    decode(cache_max_bytes, bl);
+    decode(cache_max_objects, bl);
+    decode(cache_full_ratio_micro, bl);
     decode(target_max_bytes, bl);
     decode(target_max_objects, bl);
     decode(cache_target_dirty_ratio_micro, bl);

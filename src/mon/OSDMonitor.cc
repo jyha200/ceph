@@ -8109,7 +8109,7 @@ int OSDMonitor::prepare_command_pool_set(const cmdmap_t& cmdmap,
     f = strict_strtod(val.c_str(), &floaterr);
     uf = llrintl(f * (double)1000000.0);
   }
-
+/*
   if (!p.is_tier() &&
       (var == "hit_set_type" || var == "hit_set_period" ||
        var == "hit_set_count" || var == "hit_set_fpp" ||
@@ -8121,7 +8121,7 @@ int OSDMonitor::prepare_command_pool_set(const cmdmap_t& cmdmap,
        var == "min_read_recency_for_promote" || var == "min_write_recency_for_promote")) {
     return -EACCES;
   }
-
+*/
   if (var == "size") {
     if (p.has_flag(pg_pool_t::FLAG_NOSIZECHANGE)) {
       ss << "pool size change is disabled; you must unset nosizechange flag for the pool first";
@@ -8430,6 +8430,7 @@ int OSDMonitor::prepare_command_pool_set(const cmdmap_t& cmdmap,
       return -EINVAL;
     }
     p.hit_set_period = n;
+    p.cache_hit_set_period = n;
   } else if (var == "hit_set_count") {
     if (interr.length()) {
       ss << "error parsing integer value '" << val << "': " << interr;
@@ -8439,6 +8440,7 @@ int OSDMonitor::prepare_command_pool_set(const cmdmap_t& cmdmap,
       return -EINVAL;
     }
     p.hit_set_count = n;
+    p.cache_hit_set_count = n;
   } else if (var == "hit_set_fpp") {
     if (floaterr.length()) {
       ss << "error parsing floating point value '" << val << "': " << floaterr;
@@ -8486,12 +8488,14 @@ int OSDMonitor::prepare_command_pool_set(const cmdmap_t& cmdmap,
       return -EINVAL;
     }
     p.target_max_objects = n;
+    p.cache_max_objects = n;
   } else if (var == "target_max_bytes") {
     if (interr.length()) {
       ss << "error parsing int '" << val << "': " << interr;
       return -EINVAL;
     }
     p.target_max_bytes = n;
+    p.cache_max_bytes = n;
   } else if (var == "cache_target_dirty_ratio") {
     if (floaterr.length()) {
       ss << "error parsing float '" << val << "': " << floaterr;
@@ -8522,6 +8526,7 @@ int OSDMonitor::prepare_command_pool_set(const cmdmap_t& cmdmap,
       return -ERANGE;
     }
     p.cache_target_full_ratio_micro = uf;
+    p.cache_full_ratio_micro = uf;
   } else if (var == "cache_min_flush_age") {
     if (interr.length()) {
       ss << "error parsing int '" << val << "': " << interr;

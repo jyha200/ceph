@@ -15584,13 +15584,17 @@ bool PrimaryLogPG::cache_choose_mode(OpRequestRef op)
 
   TierAgentState::evict_mode_t evict_mode = TierAgentState::EVICT_MODE_IDLE;
   unsigned evict_effort = 0;
+  dout(20) << __func__ << " hit_set_period " << pool.info.cache_hit_set_period
+    << " hit_set_count " << pool.info.cache_hit_set_count
+    << " max_bytes " << pool.info.cache_max_bytes
+    << " max_objects " << pool.info.cache_max_objects
+    << " full_ratio_micro " << pool.info.cache_full_ratio_micro << dendl;
 
   if (info.stats.stats_invalid) {
     // idle; stats can't be trusted until we scrub.
     dout(20) << __func__ << " stats invalid (post-split), idle" << dendl;
     goto skip_calc;
   }
-
   {
   uint64_t divisor = pool.info.get_pg_num_divisor(info.pgid.pgid);
   ceph_assert(divisor > 0);
