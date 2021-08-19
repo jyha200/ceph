@@ -10575,11 +10575,10 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc, bool force)
       CEPH_OSD_FLAG_RWORDERED;
     // make normal write data object and decide its location
   
-    ObjectContextRef src_obc = get_object_context(soid, false, NULL);
     C_SetDedupChunks *fin = new C_SetDedupChunks(this, soid, get_last_peering_reset(), OFFSET_NON_CHUNK_DATA);
     Context *c = new C_OnFinisher(fin, osd->get_objecter_finisher(get_pg_shard()));
     ceph_tid_t tid = osd->objecter->write_full(normal_write_target.oid, oloc, SnapContext(), normal_write_bl,
-        ceph::real_clock::from_ceph_timespec(src_obc->obs.oi.mtime), flags, c); 
+        ceph::real_clock::from_ceph_timespec(obc->obs.oi.mtime), flags, c);
     fin->tid = tid;
     mop->chunks[normal_write_target] = make_pair(OFFSET_NON_CHUNK_DATA, normal_write_bl.length());
     mop->num_chunks++;
@@ -10714,8 +10713,9 @@ int PrimaryLogPG::finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_
       osd->reply_op_error(mop->op, -EINVAL);
     return -EINVAL;
   }
-  ceph_assert(obc->is_blocked());
-  obc->stop_block();
+  if (obc->is_blocked()){
+    obc->stop_block();
+  }
   kick_object_context_blocked(obc);
   if (mop->results[0] < 0) {
     // check if the previous op returns fail
@@ -15135,16 +15135,11 @@ bool PrimaryLogPG::dedup_flush(ObjectContextRef obc) {
 
   hobject_t oid = obc->obs.oi.soid;
   osd->agent_start_op(oid);
-  // no need to capture a pg ref, can't outlive fop or ctx
-  std::function<void()> on_flush = [this, oid]() {
-    osd->agent_finish_op(oid);
-  };
 
   int result = start_flush(
     OpRequestRef(), obc, true, NULL,
-    on_flush, true);
+   std::nullopt, true);
   if (result != -EINPROGRESS) {
-    on_flush();
     dout(20) << __func__ << " start_flush() failed " << obc->obs.oi
       << " with " << result << dendl;
     osd->logger->inc(l_osd_agent_skip);
