@@ -10783,13 +10783,24 @@ int PrimaryLogPG::finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_
     ctx->new_obs.oi.manifest.chunk_map = mop->new_manifest.chunk_map;
     dout(10) << __func__ << ctx->new_obs.oi.manifest.chunk_map << dendl;
 
+    for (auto &p : ctx->new_obs.oi.manifest.chunk_map) {
+      p.second.set_flag(chunk_info_t::FLAG_MISSING);
+    }
+    PGTransaction* t = ctx->op_t.get();
+    t->zero(oid, 0, ctx->new_obs.oi.size);
+    ctx->new_obs.oi.clear_data_digest();
+    ctx->delta_stats.num_wr++;
+    ctx->cache_operation = true;
+
     finish_ctx(ctx.get(), pg_log_entry_t::CLEAN);
     simple_opc_submit(std::move(ctx));
+
   }
   if (mop->op)
     osd->reply_op_error(mop->op, r);
 
   manifest_ops.erase(oid);
+
   return 0;
 }
 
