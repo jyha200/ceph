@@ -514,13 +514,15 @@ public:
   SampleDedup(IoCtx& io_ctx, IoCtx& chunk_io_ctx, int n, int m,
     ObjectCursor& begin, ObjectCursor end, int32_t report_period,
     uint64_t num_objects, uint32_t sampling_ratio, uint32_t object_dedup_threshold,
-    uint32_t chunk_dedup_threshold, int32_t osd_count, crawl_mode_t mode):
+    uint32_t chunk_dedup_threshold, int32_t osd_count, size_t chunk_size,
+    crawl_mode_t mode):
     CrawlerThread(io_ctx, n, m, begin, end, report_period, num_objects),
     chunk_io_ctx(chunk_io_ctx),
     mode(mode),
     sampling_ratio(sampling_ratio),
     chunk_dedup_threshold(chunk_dedup_threshold),
     object_dedup_threshold(object_dedup_threshold),
+    chunk_size(chunk_size),
     osd_count(osd_count) { }
 
   ~SampleDedup() { };
@@ -570,7 +572,6 @@ private:
   crawl_mode_t mode;
   uint32_t sampling_ratio;
   std::list<chunk_t> duplicable_chunks;
-  size_t chunk_size = 8192;
   size_t total_duplicated_size = 0;
   size_t total_object_size = 0;
   size_t chunk_dedup_threshold;
@@ -583,6 +584,7 @@ private:
   std::unordered_map<std::string, fp_store_entry_t> instant_fingerprint_store;
   std::vector<ObjectItem> all_shard_objects;
   std::list<string> dedupable_objects;
+  size_t chunk_size = 8192;
   int osd_count;
 };
 
@@ -602,10 +604,6 @@ void SampleDedup::broadcast_chunk_info(string& fingerprint, size_t chunk_size){
 }
 
 void SampleDedup::crawl() {
-  cout << "SamnpleRatio : " << sampling_ratio << std::endl
-    << "Object Dedup Threshold : " << object_dedup_threshold << std::endl
-    << "Chunk Dedup Threshold : " << chunk_dedup_threshold << std::endl
-    << "Mode : " << ((mode == crawl_mode_t::DEEP) ? "DEEP" : "SHALOW") << std::endl;
   try {
     prepare_rados();
     ObjectCursor shard_start;
@@ -790,7 +788,7 @@ std::vector<std::tuple<bufferlist, pair<uint64_t, uint64_t>>> SampleDedup::do_cd
   bufferlist& data) {
   std::vector<std::tuple<bufferlist, pair<uint64_t, uint64_t>>> ret;
 
-  unique_ptr<CDC> cdc = CDC::create("fastcdc", 13);
+  unique_ptr<CDC> cdc = CDC::create("fastcdc", cbits(chunk_size));
   vector<pair<uint64_t, uint64_t>> chunks;
   cdc->calc_chunks(data, &chunks);
   for (auto& p : chunks) {
@@ -1341,6 +1339,14 @@ int make_crawling_daemon(const map<string, string> &opts,
     }
   }
 
+  size_t chunk_size = 8192;
+  i = opts.find("chunk-size");
+  if (i != opts.end()) {
+    if (rados_sistrtoll(i, &chunk_size)) {
+      return -EINVAL;
+    }
+  }
+
   uint32_t chunk_dedup_threshold = 2;
   i = opts.find("chunk-dedup-threshold");
   if (i != opts.end()) {
@@ -1390,6 +1396,12 @@ int make_crawling_daemon(const map<string, string> &opts,
       << cpp_strerror(ret) << std::endl;
     return -EINVAL;
   }
+  cout << "SamnpleRatio : " << sampling_ratio << std::endl
+    << "Object Dedup Threshold : " << object_dedup_threshold << std::endl
+    << "Chunk Dedup Threshold : " << chunk_dedup_threshold << std::endl
+    << "Chunk Size : " << chunk_size << std::endl
+    << "Mode : " << ((crawl_mode == SampleDedup::crawl_mode_t::DEEP) ? "DEEP" : "SHALOW")
+    << std::endl;
 
   while (true) {
 
@@ -1432,6 +1444,7 @@ int make_crawling_daemon(const map<string, string> &opts,
             object_dedup_threshold,
             chunk_dedup_threshold,
             osd_count,
+            chunk_size,
             crawl_mode));
       ptr->set_debug(debug);
       ptr->create("sample_dedup");
