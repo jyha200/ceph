@@ -1025,6 +1025,7 @@ protected:
   void get_watchers(std::list<obj_watch_item_t> *ls) override;
   void get_obc_watchers(ObjectContextRef obc, std::list<obj_watch_item_t> &pg_watchers);
 public:
+  void print_message(std::string& message);
   void handle_watch_timeout(WatchRef watch);
 protected:
 

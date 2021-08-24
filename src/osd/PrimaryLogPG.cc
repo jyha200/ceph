@@ -3404,6 +3404,18 @@ struct C_SetManifestRefCountDone : public Context {
   }
 };
 
+struct C_DoNothing : public Context {
+  PrimaryLogPGRef pg;
+  std::string message;
+  void finish(int r) override {
+    pg->print_message(message);
+  }
+};
+
+void PrimaryLogPG::print_message(std::string& message) {
+  dout(20) << message << dendl;
+}
+
 struct C_SetDedupChunks : public Context {
   PrimaryLogPGRef pg;
   hobject_t oid;
@@ -3722,6 +3734,31 @@ void PrimaryLogPG::dec_all_refcount_manifest(const object_info_t& oi, OpContext*
 	refcount_manifest(oi.soid, oi.manifest.redirect_target, 
 			  refcount_t::DECREMENT_REF, NULL, std::nullopt);
       });
+  }
+
+  dout(20) << __func__ << " remove normal written object " << dendl;
+  // remove normally written object
+  {
+    pg_t raw_pg;
+    object_locator_t oloc(oi.soid);
+    oloc.pool = pool.info.get_dedup_tier();
+    object_t normal_write_oid(oi.soid.oid.name + "_normal_write_data");
+    get_osdmap()->object_locator_to_pg(normal_write_oid, oloc, raw_pg);
+    hobject_t normal_write_target = hobject_t(normal_write_oid, oloc.key, snapid_t(), raw_pg.ps(),
+        raw_pg.pool(), oloc.nspace);
+
+    unsigned flags = CEPH_OSD_FLAG_IGNORE_CACHE | CEPH_OSD_FLAG_IGNORE_OVERLAY |
+      CEPH_OSD_FLAG_RWORDERED;
+    C_DoNothing *c = new C_DoNothing();
+    c->message = "remove normal data done";
+    c->pg = this;
+    osd->objecter->remove(
+        normal_write_target.oid,
+        oloc,
+        SnapContext(),
+        ceph::real_clock::from_ceph_timespec(oi.mtime),
+        flags,
+        c);
   }
 }
 
@@ -10569,12 +10606,12 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc, bool force)
   }
   dout(20) << __func__ << "finish chunk dedup"<<dendl;
 
+// write normal object which is not deduplicated
   if (normal_write_bl.length() > 0) {
   dout(20) << __func__ << "do normal write"<<dendl;
     unsigned flags = CEPH_OSD_FLAG_IGNORE_CACHE | CEPH_OSD_FLAG_IGNORE_OVERLAY |
       CEPH_OSD_FLAG_RWORDERED;
     // make normal write data object and decide its location
-  
     C_SetDedupChunks *fin = new C_SetDedupChunks(this, soid, get_last_peering_reset(), OFFSET_NON_CHUNK_DATA);
     Context *c = new C_OnFinisher(fin, osd->get_objecter_finisher(get_pg_shard()));
     ceph_tid_t tid = osd->objecter->write_full(normal_write_target.oid, oloc, SnapContext(), normal_write_bl,
@@ -10585,6 +10622,27 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc, bool force)
     mop->tids[OFFSET_NON_CHUNK_DATA] = tid;
     dout(20) << __func__ << " oid: " << soid << " tid: " << tid
       << " normal_write_target: " << normal_write_target << " offset: " << OFFSET_NON_CHUNK_DATA
+      << " length: " << normal_write_bl.length() << dendl;
+  }
+  else {
+    // remove old normally written object
+    unsigned flags = CEPH_OSD_FLAG_IGNORE_CACHE | CEPH_OSD_FLAG_IGNORE_OVERLAY |
+      CEPH_OSD_FLAG_RWORDERED;
+    C_SetDedupChunks *fin = new C_SetDedupChunks(this, soid, get_last_peering_reset(), OFFSET_NON_CHUNK_DATA);
+    Context *c = new C_OnFinisher(fin, osd->get_objecter_finisher(get_pg_shard()));
+    ceph_tid_t tid = osd->objecter->remove(
+        normal_write_target.oid,
+        oloc,
+        SnapContext(),
+        ceph::real_clock::from_ceph_timespec(obc->obs.oi.mtime),
+        flags,
+        c);
+    fin->tid = tid;
+    mop->chunks[normal_write_target] = make_pair(OFFSET_NON_CHUNK_DATA, normal_write_bl.length());
+    mop->num_chunks++;
+    mop->tids[OFFSET_NON_CHUNK_DATA] = tid;
+    dout(20) << __func__ << " oid: " << soid << " tid: " << tid
+      << " remove eormal_write_target: " << normal_write_target << " offset: " << OFFSET_NON_CHUNK_DATA
       << " length: " << normal_write_bl.length() << dendl;
   }
 
@@ -15014,7 +15072,7 @@ bool PrimaryLogPG::dedup_cache_work()
 
   //hit_set_in_memory_trim(pool.info.hit_set_count);
   {
-    while (cache_state->hit_set_map.size() > pool.info.hit_set_count) {
+    while (cache_state->hit_set_map.size() > pool.info.cache_hit_set_count) {
       cache_state->remove_oldest_hit_set();
     }
   }
@@ -15146,6 +15204,9 @@ bool PrimaryLogPG::dedup_flush(ObjectContextRef obc) {
 
   hobject_t oid = obc->obs.oi.soid;
   osd->agent_start_op(oid);
+
+  obc->obs.oi.set_flag(object_info_t::FLAG_MANIFEST);
+  obc->obs.oi.manifest.type = object_manifest_t::TYPE_CHUNKED;
 
   int result = start_flush(
     OpRequestRef(), obc, true, NULL,
@@ -15594,7 +15655,8 @@ bool PrimaryLogPG::cache_choose_mode(OpRequestRef op)
     << " hit_set_count " << pool.info.cache_hit_set_count
     << " max_bytes " << pool.info.cache_max_bytes
     << " max_objects " << pool.info.cache_max_objects
-    << " full_ratio_micro " << pool.info.cache_full_ratio_micro << dendl;
+    << " full_ratio_micro " << pool.info.cache_full_ratio_micro
+    << " stats_invalid " << info.stats.stats_invalid << dendl;
 
   if (info.stats.stats_invalid) {
     // idle; stats can't be trusted until we scrub.
@@ -15609,8 +15671,10 @@ bool PrimaryLogPG::cache_choose_mode(OpRequestRef op)
   // of HitSet objects, which should not count toward our total since
   // they cannot be flushed.
   uint64_t unflushable = info.stats.stats.sum.num_objects_hit_set_archive;
+  dout(20) << __func__ << " unflushable " << unflushable << dendl;
 
   uint64_t num_user_objects = info.stats.stats.sum.num_objects;
+  dout(20) << __func__ << " initial num_object " << num_user_objects << dendl;
   if (num_user_objects > unflushable)
     num_user_objects -= unflushable;
   else
@@ -15624,7 +15688,8 @@ bool PrimaryLogPG::cache_choose_mode(OpRequestRef op)
 
   // also reduce the num_dirty by num_objects_omap
   int64_t num_dirty = info.stats.stats.sum.num_objects_dirty;
-  
+  dout(20) << __func__ << " num_object " << num_user_objects << dendl;
+
   // get dirty, full ratios
   uint64_t dirty_micro = 0;
   uint64_t full_micro = 0;
@@ -15636,6 +15701,7 @@ bool PrimaryLogPG::cache_choose_mode(OpRequestRef op)
     full_micro =
       num_user_objects * avg_size * 1000000 /
       std::max<uint64_t>(pool.info.cache_max_bytes / divisor, 1);
+    dout(20) << __func__ << " full_micro initial " << full_micro << dendl;
   }
   if (pool.info.cache_max_objects > 0) {
     uint64_t dirty_objects_micro =
@@ -15646,6 +15712,7 @@ bool PrimaryLogPG::cache_choose_mode(OpRequestRef op)
     uint64_t full_objects_micro =
       num_user_objects * 1000000 /
       std::max<uint64_t>(pool.info.cache_max_objects / divisor, 1);
+    dout(20) << __func__ << " full_object_micro " << full_objects_micro << dendl;
     if (full_objects_micro > full_micro)
       full_micro = full_objects_micro;
   }
