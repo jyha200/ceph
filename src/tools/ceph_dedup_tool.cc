@@ -1377,7 +1377,14 @@ int make_crawling_daemon(const map<string, string> &opts,
     cerr << "couldn't connect to cluster: " << cpp_strerror(ret) << std::endl;
     return -EINVAL;
   }
-  uint32_t wakeup_period = 100; 
+  uint32_t wakeup_period = 100;
+  i = opts.find("wakeup-period");
+  if (i != opts.end()) {
+    if (rados_sistrtoll(i, &wakeup_period)) {
+      return -EINVAL;
+    }
+  }
+
   list<string> pool_names;
   IoCtx io_ctx, chunk_io_ctx;
   pool_names.push_back(base_pool_name);
@@ -1536,6 +1543,8 @@ int main(int argc, const char **argv)
       opts["chunk-dedup-threshold"] = val;
     } else if (ceph_argparse_witharg(args, i, &val, "--osd-count", (char*)NULL)) {
       opts["osd-count"] = val;
+    } else if (ceph_argparse_witharg(args, i, &val, "--wakeup-period", (char*)NULL)) {
+      opts["wakeup-period"] = val;
     } else if (ceph_argparse_flag(args, i, "--daemon", (char*)NULL)) {
       opts["daemon"] = "true";
     } else if (ceph_argparse_flag(args, i, "--iterative", (char*)NULL)) {

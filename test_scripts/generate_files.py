@@ -25,13 +25,13 @@ def generate():
     file_count = args.n - created_count
     if file_count > 1000:
         file_count = 1000
-    unique_file_count = (int)(file_count * args.r / 100)
-    duplicate_file_count = file_count - unique_file_count
+    duplicate_file_count = (int)(file_count * args.r / 100)
+    unique_file_count = file_count - duplicate_file_count
     skew_file_count = (int)(file_count * args.d / 100)
     command = 'fio --filesize 4k-4m --directory ' + str(local_file_dst) + \
       ' --do_verify 0 --readwrite write --group_reporting --verify_state_save 0' +\
       ' --name unique_' + str(iteration) + ' --verify md5 --nrfiles ' + str(unique_file_count) + \
-      ' --name skew_' + str(iteration) + ' --verify pattern --verify_pattern 0xabcd'
+      ' --name skew_' + str(iteration) + ' --verify pattern --verify_pattern 0xabcd --nrfiles ' + str(skew_file_count)
     double_dup_file_count = duplicate_file_count - skew_file_count
     for i in range(0, double_dup_file_count):
       command += " --name dup_" + str(iteration) +"_" + str(i) + " --nrfiles 1 --verify pattern --verify_pattern " + str(random.randint(0, 1000000))
