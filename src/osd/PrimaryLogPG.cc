@@ -10619,11 +10619,9 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc, bool force)
         << " length: " << p.second.length() << dendl;
     }
   }
-  dout(20) << __func__ << "finish chunk dedup"<<dendl;
 
 // write normal object which is not deduplicated
   if (normal_write_bl.length() > 0) {
-  dout(20) << __func__ << "do normal write"<<dendl;
     unsigned flags = CEPH_OSD_FLAG_IGNORE_CACHE | CEPH_OSD_FLAG_IGNORE_OVERLAY |
       CEPH_OSD_FLAG_RWORDERED;
     // make normal write data object and decide its location
@@ -10863,7 +10861,7 @@ int PrimaryLogPG::finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_
     }
     dout(10) << __func__ << " " << oid << " tid " << tid << " delete meta object data " << dendl;
     PGTransaction* t = ctx->op_t.get();
-    t->zero(oid, 0, ctx->new_obs.oi.size);
+    t->zero(oid, 0, ctx->obs->oi.size);
     ctx->new_obs.oi.clear_data_digest();
     ctx->delta_stats.num_wr++;
     ctx->cache_operation = true;
