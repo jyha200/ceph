@@ -180,6 +180,10 @@ public:
   requested_scrub_t m_planned_scrub;
   /// scrubbing state for both Primary & replicas
   bool is_scrub_active() const { return m_scrubber->is_scrub_active(); }
+  virtual void add_chunk(
+      const string_view& orig_prefix,
+      const cmdmap_t& cmdmap,
+      const bufferlist& idata) {}
 
 public:
   // -- members --

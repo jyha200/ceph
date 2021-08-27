@@ -990,6 +990,45 @@ PrimaryLogPG::get_pgls_filter(bufferlist::const_iterator& iter)
 
 
 // ==========================================================
+void PrimaryLogPG::add_chunk(
+  const string_view& orig_prefix,
+  const cmdmap_t& cmdmap,
+  const bufferlist& idata)
+{
+  string prefix(orig_prefix);
+  string command;
+  cmd_getval(cmdmap, "cmd", command);
+  if (command.size()) {
+    prefix = command;
+  }
+
+  if (prefix == "add_chunk_info") {
+    string fingerprint;
+    string chunk_size_string;
+    if (!cmd_getval(cmdmap, "fingerprint", fingerprint)) {
+      dout(10) << "no fingerprint in add_chunk_info" << dendl;
+      return;
+    }
+
+    if (!cmd_getval(cmdmap, "chunk_size", chunk_size_string)) {
+      dout(10) << "no chunk_size in add_chunk_info" << dendl;
+      return;
+    }
+
+    size_t chunk_size = strtoull(chunk_size_string.c_str(), NULL, 10);
+
+    auto iter = chunk_info_store.find(fingerprint);
+    if (iter == chunk_info_store.end()) {
+      chunk_info_store.insert({fingerprint, chunk_size});
+      dout(1) << "chunk_size " << chunk_size_string << " fingerprint "
+        << fingerprint << "inserted" << dendl;
+    }
+    else {
+      dout(10) << "chunk_size " << chunk_size_string << " fingerprint "
+        << fingerprint << "already exists" << dendl;
+    }
+  }
+}
 
 void PrimaryLogPG::do_command(
   const string_view& orig_prefix,
@@ -1015,33 +1054,7 @@ void PrimaryLogPG::do_command(
     prefix = command;
   }
 
-  if (prefix == "add_chunk_info") {
-    string fingerprint;
-    string chunk_size_string;
-    if (!cmd_getval(cmdmap, "fingerprint", fingerprint)) {
-      dout(10) << "no fingerprint in add_chunk_info" << dendl;
-      goto out;
-    }
-
-    if (!cmd_getval(cmdmap, "chunk_size", chunk_size_string)) {
-      dout(10) << "no chunk_size in add_chunk_info" << dendl;
-      goto out;
-    }
-
-    size_t chunk_size = strtoull(chunk_size_string.c_str(), NULL, 10);
-
-    auto iter = chunk_info_store.find(fingerprint);
-    if (iter == chunk_info_store.end()) {
-      chunk_info_store.insert({fingerprint, chunk_size});
-      dout(10) << "chunk_size " << chunk_size_string << " fingerprint "
-        << fingerprint << "inserted" << dendl;
-    }
-    else {
-      dout(10) << "chunk_size " << chunk_size_string << " fingerprint "
-        << fingerprint << "already exists" << dendl;
-    }
-  }
-  else if (prefix == "query") {
+  if (prefix == "query") {
     f->open_object_section("pg");
     f->dump_stream("snap_trimq") << snap_trimq;
     f->dump_unsigned("snap_trimq_len", snap_trimq.size());
@@ -10585,12 +10598,14 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc, bool force)
     }
     ceph_tid_t tid;
     bufferlist& bl = chunks[p.first];
-    if (force && !found_in_chunk_info_store(target, bl.length())) {
+    if (force && !found_in_chunk_info_store(target.oid.name, bl.length())) {
+      dout(20) << "chunk fp: " << target.oid.name << " not found"<<dendl; 
       mop->new_manifest.chunk_map[p.first].offset = normal_write_offset;
       mop->new_manifest.chunk_map[p.first].oid = normal_write_target;
       normal_write_offset += mop->new_manifest.chunk_map[p.first].length;
       normal_write_bl.append(bl);
     } else {
+      dout(20) << "chunk fp: " << target.oid.name << " found"<<dendl; 
       C_SetDedupChunks *fin = new C_SetDedupChunks(this, soid, get_last_peering_reset(), p.first);
       tid = refcount_manifest(soid, target, refcount_t::CREATE_OR_GET_REF, 
           fin, move(bl));
@@ -10599,7 +10614,7 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc, bool force)
       mop->chunks[target] = make_pair(p.first, p.second.length());
       mop->num_chunks++;
       mop->tids[p.first] = tid;
-      dout(20) << __func__ << " oid: " << soid << " tid: " << tid
+      dout(1) << __func__ << " oid: " << soid << " tid: " << tid
         << " target: " << target << " offset: " << p.first
         << " length: " << p.second.length() << dendl;
     }
@@ -10625,6 +10640,7 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc, bool force)
       << " length: " << normal_write_bl.length() << dendl;
   }
   else {
+#if 0
     // remove old normally written object
     unsigned flags = CEPH_OSD_FLAG_IGNORE_CACHE | CEPH_OSD_FLAG_IGNORE_OVERLAY |
       CEPH_OSD_FLAG_RWORDERED;
@@ -10644,6 +10660,7 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc, bool force)
     dout(20) << __func__ << " oid: " << soid << " tid: " << tid
       << " remove eormal_write_target: " << normal_write_target << " offset: " << OFFSET_NON_CHUNK_DATA
       << " length: " << normal_write_bl.length() << dendl;
+#endif
   }
 
   if (mop->tids.size()) {
@@ -10657,9 +10674,9 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc, bool force)
   return -EINPROGRESS;
 }
 
-bool PrimaryLogPG::found_in_chunk_info_store(hobject_t& target, size_t size)
+bool PrimaryLogPG::found_in_chunk_info_store(string& fingerprint, size_t size)
 {
-  auto iter = chunk_info_store.find(target.oid.name);
+  auto iter = chunk_info_store.find(fingerprint);
   return iter != chunk_info_store.end();
 }
 
@@ -10844,6 +10861,7 @@ int PrimaryLogPG::finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_
     for (auto &p : ctx->new_obs.oi.manifest.chunk_map) {
       p.second.set_flag(chunk_info_t::FLAG_MISSING);
     }
+    dout(10) << __func__ << " " << oid << " tid " << tid << " delete meta object data " << dendl;
     PGTransaction* t = ctx->op_t.get();
     t->zero(oid, 0, ctx->new_obs.oi.size);
     ctx->new_obs.oi.clear_data_digest();

@@ -589,11 +589,11 @@ void OSDService::dedup_cache_entry()
   while (agent_stop_flag == false) {
     vector<PGRef> pgs;
     osd->_get_pgs(&pgs);
-    int i = 0;
     for (auto p : pgs) {
-      p->dedup_cache_work();
-      sleep(1);
-      i++;
+      if (p->is_primary()) {
+        p->dedup_cache_work();
+        sleep(1);
+      }
     }
   }
 }
@@ -2593,9 +2593,8 @@ void OSD::asok_command(
       if (pg->is_primary()) {
         try {
           pg->lock();
-          pg->do_command(prefix, cmdmap, inbl, on_finish);
+          pg->add_chunk(prefix, cmdmap, inbl);
           pg->unlock();
-          return;
         }
         catch (const TOPNSPC::common::bad_cmd_get& e) {
           pg->unlock();

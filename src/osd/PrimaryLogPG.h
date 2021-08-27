@@ -63,6 +63,10 @@ class PrimaryLogPG : public PG, public PGBackend::Listener {
 public:
   MEMPOOL_CLASS_HELPERS();
 
+  void add_chunk (const string_view& orig_prefix,
+      const cmdmap_t& cmdmap,
+      const bufferlist& idata) override;
+
   /*
    * state associated with a copy operation
    */
@@ -1472,7 +1476,7 @@ protected:
   int do_cdc(const object_info_t& oi, std::map<uint64_t, chunk_info_t>& chunk_map,
 	     std::map<uint64_t, bufferlist>& chunks);
   int start_dedup(OpRequestRef op, ObjectContextRef obc, bool force);
-  bool found_in_chunk_info_store(hobject_t& target, size_t size);
+  bool found_in_chunk_info_store(string& fingerprint, size_t size);
   hobject_t get_fpoid_from_chunk(const hobject_t soid, bufferlist& chunk);
   int finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_t offset);
   int finish_set_manifest_refcount(hobject_t oid, int r, ceph_tid_t tid, uint64_t offset);
