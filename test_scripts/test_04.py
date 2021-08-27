@@ -24,6 +24,8 @@ def execute_ceph():
 def wait():
     # wait until all data flushed
     print("wait all object flushed\n")
+    time.sleep(100)
+    return 
     
     while True:
         proc = subprocess.Popen('sudo ../build/bin/rados df | awk \'{if($1==\"base_pool\") print $2}\'', stdout=subprocess.PIPE, shell=True)
