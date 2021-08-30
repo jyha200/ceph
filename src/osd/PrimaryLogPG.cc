@@ -10865,6 +10865,8 @@ int PrimaryLogPG::finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_
     ctx->delta_stats.num_wr++;
     ctx->cache_operation = true;
 
+    ctx->delta_stats.num_bytes -= ctx->obs->oi.size;
+
     finish_ctx(ctx.get(), pg_log_entry_t::CLEAN);
     simple_opc_submit(std::move(ctx));
 
