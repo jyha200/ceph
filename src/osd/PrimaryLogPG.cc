@@ -10614,7 +10614,7 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc, bool force)
       mop->chunks[target] = make_pair(p.first, p.second.length());
       mop->num_chunks++;
       mop->tids[p.first] = tid;
-      dout(1) << __func__ << " oid: " << soid << " tid: " << tid
+      dout(10) << __func__ << " oid: " << soid << " tid: " << tid
         << " target: " << target << " offset: " << p.first
         << " length: " << p.second.length() << dendl;
     }
@@ -10780,16 +10780,15 @@ int PrimaryLogPG::finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_
     // there are on-going works
     return -EINPROGRESS;
   }
+
+  ceph_assert(processing_dedup_object > 0);
+  processing_dedup_object--;
   ObjectContextRef obc = get_object_context(oid, false);
   if (!obc) {
     if (mop->op)
       osd->reply_op_error(mop->op, -EINVAL);
     return -EINVAL;
   }
-  if (obc->is_blocked()){
-    obc->stop_block();
-  }
-  kick_object_context_blocked(obc);
   if (mop->results[0] < 0) {
     // check if the previous op returns fail
     ceph_assert(mop->num_chunks == mop->results.size());
@@ -10870,6 +10869,11 @@ int PrimaryLogPG::finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_
     simple_opc_submit(std::move(ctx));
 
   }
+  if (obc->is_blocked()){
+    obc->stop_block();
+  }
+  kick_object_context_blocked(obc);
+
   if (mop->op)
     osd->reply_op_error(mop->op, r);
 
@@ -15015,7 +15019,6 @@ bool PrimaryLogPG::dedup_cache_work()
     cache_hit_set_create();
     dout(20) << __func__ << " allocated new state, position "
 	    << cache_state->position << dendl;
-    return true;
   }
 
   ceph_assert(!recovery_state.is_deleting());
@@ -15061,8 +15064,9 @@ bool PrimaryLogPG::dedup_cache_work()
     }
   }
 
+  uint64_t evict_count = 0;
   int ls_min = 1;
-  int ls_max = 10000;
+  int ls_max = 100;
   vector<hobject_t> ls;
   hobject_t next;
   int r = pgbackend->objects_list_partial(cache_state->position, ls_min, ls_max,
@@ -15071,9 +15075,8 @@ bool PrimaryLogPG::dedup_cache_work()
   for (vector<hobject_t>::iterator p = ls.begin(); p != ls.end(); ++p) {
     ObjectContextRef obc = get_object_context(*p, false, NULL);
     if (dedup_evict(obc)) {
+      evict_count++;
     }
-  //  else if (dedup_flush(obc)) {
-//    }
   }
   if (++cache_state->hist_age > cct->_conf->osd_agent_hist_halflife) {
     dout(20) << __func__ << " resetting atime and temp histograms" << dendl;
@@ -15094,7 +15097,7 @@ bool PrimaryLogPG::dedup_cache_work()
   }
 
   cache_choose_mode();
-  return true;
+  return evict_count > 0;
 }
 
 bool PrimaryLogPG::dedup_evict(ObjectContextRef obc)
@@ -15170,12 +15173,21 @@ bool PrimaryLogPG::dedup_evict(ObjectContextRef obc)
   if (obc->obs.oi.is_dirty()) {
     dout(20) << __func__ << " flush before evicting " << obc->obs.oi << dendl;
     dedup_flush(obc);
-    return false;
+    return true;
   }
   return false;
 }
 
 bool PrimaryLogPG::dedup_flush(ObjectContextRef obc) {
+#if 0
+if (processing_dedup_object >= max_processing_dedup_object){
+    dout(20) << __func__ << " skip (throttle) " << obc->obs.oi << dendl;
+    return false;
+  }
+#endif
+
+  processing_dedup_object++;
+
   if (!obc->obs.oi.is_dirty()) {
     dout(20) << __func__ << " skip (clean) " << obc->obs.oi << dendl;
     osd->logger->inc(l_osd_agent_skip);

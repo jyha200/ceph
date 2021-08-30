@@ -591,8 +591,10 @@ void OSDService::dedup_cache_entry()
     osd->_get_pgs(&pgs);
     for (auto p : pgs) {
       if (p->is_primary()) {
-        p->dedup_cache_work();
-        sleep(1);
+        bool processed = p->dedup_cache_work();
+        if (processed == false) {
+         usleep(10000);
+        }
       }
     }
   }

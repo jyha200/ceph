@@ -67,6 +67,9 @@ public:
       const cmdmap_t& cmdmap,
       const bufferlist& idata) override;
 
+  uint32_t processing_dedup_object = 0;
+  //uint32_t max_processing_dedup_object = 1;
+
   /*
    * state associated with a copy operation
    */
