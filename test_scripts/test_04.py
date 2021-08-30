@@ -15,17 +15,14 @@ chunk_size = 8192
 filepath = os.path.dirname(os.path.abspath(__file__))
 
 def execute_ceph():
-  os.chdir(ceph_bin_abs_path + '/../')
-  ceph_log = open("ceph.log", "w")
-  subprocess.call("sudo rm -r dev out", shell=True)
-  subprocess.call("sudo CEPH_NUM_FS=0 MON=1 OSD=1 ../src/vstart.sh --new --bluestore-devs /dev/nvme0n1", shell=True, stderr=ceph_log, stdout=ceph_log)
-  subprocess.call("sudo cp ceph.conf " + filepath, shell=True)
-
+  os.chdir(filepath)
+  subprocess.call("sudo ./bringup_mon_osd.sh", shell=True)
+  
 def wait():
     # wait until all data flushed
     print("wait all object flushed\n")
     time.sleep(100)
-    return 
+  #  return 
     
     while True:
         proc = subprocess.Popen('sudo ../build/bin/rados df | awk \'{if($1==\"base_pool\") print $2}\'', stdout=subprocess.PIPE, shell=True)
@@ -37,16 +34,16 @@ def wait():
 
 def configure_ceph():
   os.chdir(ceph_bin_abs_path + '/../')
-  subprocess.call("sudo bin/ceph osd pool create base_pool 128", shell=True)
+  subprocess.call("sudo bin/ceph osd pool create base_pool 1", shell=True)
   subprocess.call("sudo bin/ceph osd pool create chunk_pool", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_tier chunk_pool", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_chunk_algorithm fastcdc", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_cdc_chunk_size " + str(chunk_size), shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool fingerprint_algorithm sha1", shell=True)
+  subprocess.call("sudo bin/ceph osd pool set base_pool target_max_objects 10000", shell=True)
+  subprocess.call("sudo bin/ceph osd pool set base_pool target_max_bytes 1048576000", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool pg_autoscale_mode off", shell=True)
-  subprocess.call("sudo bin/ceph osd pool set base_pool target_max_objects 1", shell=True)
-  subprocess.call("sudo bin/ceph osd pool set base_pool hit_set_count 1", shell=True)
-#  subprocess.call("sudo bin/ceph osd pool set base_pool cache_target_full_ratio .1", shell=True)
+  subprocess.call("sudo bin/ceph osd pool set base_pool cache_target_full_ratio .9", shell=True)
 
 def process():
   global ceph_bin_abs_path
@@ -78,8 +75,8 @@ def process():
 
 # execute shallow crawler
     print("execute shallow crawler\n")
-    command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 1 --shallow-crawling --sampling-ratio 10 --osd-count 1 --wakeup-period 10 --iterative --chunk-size " + str(chunk_size)
-    shallow_crawler = subprocess.Popen(command, shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+    command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 1 --shallow-crawling --sampling-ratio 10 --osd-count 1 --wakeup-period 30 --iterative --chunk-size " + str(chunk_size)
+#    shallow_crawler = subprocess.Popen(command, shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
 
 
 # put objects
@@ -93,12 +90,12 @@ def process():
     wait()
 
     profiler_process.terminate()
-    shallow_crawler.terminate()
+#    shallow_crawler.terminate()
     subprocess.call("sudo pkill -9 ceph", shell=True)
 
 def parse_arguments():
   parser = argparse.ArgumentParser()
-  parser.add_argument('--ceph', type=str, help='ceph bin path')
+  parser.add_argument('--ceph', type=str, default='../build/bin/', help='ceph bin path')
   parser.add_argument('--skip_new_file', type=int, default=1, help='skip new file')
   global args
   args = parser.parse_args()

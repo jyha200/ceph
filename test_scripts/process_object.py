@@ -10,11 +10,13 @@ import sys
 def process():
   ceph_path = args.ceph
   files = os.listdir(args.src)
+  log = open("proc_object.log", "w")
   for file in files:
     path = os.path.join(args.src, file)
     if os.path.isfile(path):
       command = ceph_path + "/rados -p " + args.pool + " put " + file + " " + path
-      subprocess.call(command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+      subprocess.call(command, shell=True, stdout=log, stderr=log)
+  log.close()
 
 def parse_arguments():
   parser = argparse.ArgumentParser()
