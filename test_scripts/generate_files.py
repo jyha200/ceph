@@ -15,8 +15,11 @@ def generate():
     return
 
   local_file_dst = file_dst + '_' + str(args.n) + '_' + str(args.d) + '_' + str(args.r)
-  shutil.rmtree(local_file_dst, ignore_errors=True)
-  os.makedirs(local_file_dst, exist_ok=True)
+  try:
+    os.mkdir(local_file_dst)
+  except:
+    print ("files already exist, skip")
+    return
 
   created_count = 0
   iteration = 0

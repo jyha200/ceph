@@ -8,8 +8,8 @@ import random
 import sys
 import time
 
-num_files = 3000
-skew_ratio = 40
+num_files = 1000
+skew_ratio = 20
 dedup_ratio = 100
 chunk_size = 8192
 filepath = os.path.dirname(os.path.abspath(__file__))
@@ -20,7 +20,7 @@ def execute_ceph():
   
 def configure_ceph():
   os.chdir(ceph_bin_abs_path + '/../')
-  subprocess.call("sudo bin/ceph osd pool create base_pool 1", shell=True)
+  subprocess.call("sudo bin/ceph osd pool create base_pool 128", shell=True)
   subprocess.call("sudo bin/ceph osd pool create chunk_pool", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_tier chunk_pool", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_chunk_algorithm fastcdc", shell=True)
@@ -60,7 +60,7 @@ def process():
 
 # execute shallow crawler
     print("execute shallow crawler\n")
-    command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 1 --shallow-crawling --sampling-ratio 10 --osd-count 1 --iterative --chunk-size " + str(chunk_size)
+    command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 1 --shallow-crawling --sampling-ratio 10 --osd-count 3 --iterative --chunk-size " + str(chunk_size)
     shallow_crawler = subprocess.Popen(command, shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
 
 
