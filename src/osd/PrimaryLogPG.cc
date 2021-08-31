@@ -7482,20 +7482,15 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	}
 
 	// The chunks already has a reference, so it is just enough to invoke truncate if necessary
-	uint64_t chunk_length = 0;
-	for (auto p : obs.oi.manifest.chunk_map) {
-	  chunk_length += p.second.length;
-	}
-	if (chunk_length == obs.oi.size) {
-	  for (auto &p : obs.oi.manifest.chunk_map) {
-	    p.second.set_flag(chunk_info_t::FLAG_MISSING);
-	  }
-	  // punch hole
-	  t->zero(soid, 0, oi.size);
-	  oi.clear_data_digest();
-	  ctx->delta_stats.num_wr++;
-	  ctx->cache_operation = true;
-	}
+        for (auto &p : obs.oi.manifest.chunk_map) {
+          p.second.set_flag(chunk_info_t::FLAG_MISSING);
+          // punch hole
+          t->zero(soid, p.second.offset, p.second.length);
+        }
+        oi.clear_data_digest();
+        ctx->delta_stats.num_wr++;
+        ctx->cache_operation = true;
+
 	osd->logger->inc(l_osd_tier_evict);
       }
 
@@ -10781,8 +10776,6 @@ int PrimaryLogPG::finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_
     return -EINPROGRESS;
   }
 
-  ceph_assert(processing_dedup_object > 0);
-  processing_dedup_object--;
   ObjectContextRef obc = get_object_context(oid, false);
   if (!obc) {
     if (mop->op)
@@ -10854,18 +10847,6 @@ int PrimaryLogPG::finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_
     // set new references
     ctx->new_obs.oi.manifest.chunk_map = mop->new_manifest.chunk_map;
     dout(10) << __func__ << ctx->new_obs.oi.manifest.chunk_map << dendl;
-
-    for (auto &p : ctx->new_obs.oi.manifest.chunk_map) {
-      p.second.set_flag(chunk_info_t::FLAG_MISSING);
-    }
-    dout(10) << __func__ << " " << oid << " tid " << tid << " delete meta object data " << dendl;
-    PGTransaction* t = ctx->op_t.get();
-    t->zero(oid, 0, ctx->obs->oi.size);
-    ctx->new_obs.oi.clear_data_digest();
-    ctx->delta_stats.num_wr++;
-    ctx->cache_operation = true;
-
-    ctx->delta_stats.num_bytes -= ctx->obs->oi.size;
 
     finish_ctx(ctx.get(), pg_log_entry_t::CLEAN);
     simple_opc_submit(std::move(ctx));
@@ -15067,6 +15048,7 @@ bool PrimaryLogPG::dedup_cache_work()
   }
 
   uint64_t evict_count = 0;
+  uint64_t flush_count = 0;
   int ls_min = 1;
   int ls_max = 100;
   vector<hobject_t> ls;
@@ -15078,6 +15060,9 @@ bool PrimaryLogPG::dedup_cache_work()
     ObjectContextRef obc = get_object_context(*p, false, NULL);
     if (dedup_evict(obc)) {
       evict_count++;
+    }
+    else if (dedup_flush(obc)) {
+      flush_count++;
     }
   }
   if (++cache_state->hist_age > cct->_conf->osd_agent_hist_halflife) {
@@ -15099,14 +15084,17 @@ bool PrimaryLogPG::dedup_cache_work()
   }
 
   cache_choose_mode();
-  return evict_count > 0;
+  return evict_count > 0 || flush_count > 0;
 }
 
 bool PrimaryLogPG::dedup_evict(ObjectContextRef obc)
 {
   dout(20) << __func__ << " start "<< obc->obs.oi << dendl;
   const hobject_t& soid = obc->obs.oi.soid;
-
+  if (obc->obs.oi.is_dirty()) {
+    dout(20) << __func__ << " skip (dirty) " << obc->obs.oi << dendl;
+    return false;
+  }
   if (!obc->obs.oi.watchers.empty()) {
     dout(20) << __func__ << " skip (watchers) " << obc->obs.oi << dendl;
     return false;
@@ -15128,68 +15116,89 @@ bool PrimaryLogPG::dedup_evict(ObjectContextRef obc)
     }
   }
 
-  // is this object old than cache_min_evict_age?
-  utime_t now = ceph_clock_now();
-  utime_t ob_local_mtime;
-  if (obc->obs.oi.local_mtime != utime_t()) {
-    ob_local_mtime = obc->obs.oi.local_mtime;
-  } else {
-    ob_local_mtime = obc->obs.oi.mtime;
-  }
-  if (ob_local_mtime + utime_t(pool.info.cache_min_evict_age, 0) > now) {
-    dout(20) << __func__ << " skip (too young) " << obc->obs.oi << dendl;
-    osd->logger->inc(l_osd_agent_skip);
-    return false;
-  }
-  // is this object old and/or cold enough?
-  int temp = 0;
-  uint64_t temp_upper = 0, temp_lower = 0;
-  if (cache_hit_set)
-  {
-    //agent_estimate_temp(soid, &temp);
-    temp = 0;
-    if (cache_hit_set->contains(soid)) {
-      temp = 1000000;
+  if (cache_state->evict_mode != TierAgentState::EVICT_MODE_FULL) {
+    // is this object old than cache_min_evict_age?
+    utime_t now = ceph_clock_now();
+    utime_t ob_local_mtime;
+    if (obc->obs.oi.local_mtime != utime_t()) {
+      ob_local_mtime = obc->obs.oi.local_mtime;
+    } else {
+      ob_local_mtime = obc->obs.oi.mtime;
     }
-    unsigned i = 0;
-    int last_n = pool.info.hit_set_search_last_n;
-    for (map<time_t,HitSetRef>::reverse_iterator p =
-        cache_state->hit_set_map.rbegin(); last_n > 0 &&
-        p != cache_state->hit_set_map.rend(); ++p, ++i) {
-      if (p->second->contains(soid)) {
-        temp += pool.info.get_grade(i);
-        --last_n;
+    if (ob_local_mtime + utime_t(pool.info.cache_min_evict_age, 0) > now) {
+      dout(20) << __func__ << " skip (too young) " << obc->obs.oi << dendl;
+      osd->logger->inc(l_osd_agent_skip);
+      return false;
+    }
+    // is this object old and/or cold enough?
+    int temp = 0;
+    uint64_t temp_upper = 0, temp_lower = 0;
+    if (cache_hit_set)
+    {
+      //agent_estimate_temp(soid, &temp);
+      temp = 0;
+      if (cache_hit_set->contains(soid)) {
+        temp = 1000000;
+      }
+      unsigned i = 0;
+      int last_n = pool.info.hit_set_search_last_n;
+      for (map<time_t,HitSetRef>::reverse_iterator p =
+          cache_state->hit_set_map.rbegin(); last_n > 0 &&
+          p != cache_state->hit_set_map.rend(); ++p, ++i) {
+        if (p->second->contains(soid)) {
+          temp += pool.info.get_grade(i);
+          --last_n;
+        }
       }
     }
-  }
-  cache_state->temp_hist.add(temp);
-  cache_state->temp_hist.get_position_micro(temp, &temp_lower, &temp_upper);
-  dout(20) << __func__ << " temp lower " << temp_lower << " temp upper " << temp_upper
-    << __func__ << " evict_effort " << cache_state->evict_effort << dendl;
+    cache_state->temp_hist.add(temp);
+    cache_state->temp_hist.get_position_micro(temp, &temp_lower, &temp_upper);
+    dout(20) << __func__ << " temp lower " << temp_lower << " temp upper " << temp_upper
+      << __func__ << " evict_effort " << cache_state->evict_effort << dendl;
 
-  if (1000000 - temp_upper >= cache_state->evict_effort) {
-    dout(20) << __func__ << " still hot " << obc->obs.oi << dendl;
-    return false;
+    if (1000000 - temp_upper >= cache_state->evict_effort) {
+      dout(20) << __func__ << " still hot " << obc->obs.oi << dendl;
+      return false;
+    }
   }
+  {
+    auto null_op_req = OpRequestRef();
+    OpContextUPtr ctx = simple_opc_create(obc);
+    if (!ctx->lock_manager.get_lock_type(
+          RWState::RWWRITE,
+          obc->obs.oi.soid,
+          obc,
+          null_op_req)) {
+      close_op_ctx(ctx.release());
+      dout(20) << __func__ << " skip (cannot get lock) " << obc->obs.oi << dendl;
+      return false;
+    }
 
-  if (obc->obs.oi.is_dirty()) {
-    dout(20) << __func__ << " flush before evicting " << obc->obs.oi << dendl;
-    dedup_flush(obc);
-    return true;
+    ctx->at_version = get_next_version();
+    ctx->new_obs = obc->obs;
+    ObjectState& obs = ctx->new_obs;
+    object_info_t& oi = obs.oi;
+    const hobject_t& soid = oi.soid;
+    // The chunks already has a reference, so it is just enough to invoke truncate if necessary
+    for (auto &p : obs.oi.manifest.chunk_map) {
+      p.second.set_flag(chunk_info_t::FLAG_MISSING);
+      // punch hole
+      ctx->delta_stats.num_bytes -= p.second.length;
+      PGTransaction* t = ctx->op_t.get();
+      t->zero(soid, p.second.offset, p.second.length);
+    }
+    oi.clear_data_digest();
+    ctx->delta_stats.num_wr++;
+    ctx->cache_operation = true;
+    finish_ctx(ctx.get(), pg_log_entry_t::CLEAN);
+
+    simple_opc_submit(std::move(ctx));
+    osd->logger->inc(l_osd_tier_evict);
   }
-  return false;
+  return true;
 }
 
 bool PrimaryLogPG::dedup_flush(ObjectContextRef obc) {
-#if 0
-if (processing_dedup_object >= max_processing_dedup_object){
-    dout(20) << __func__ << " skip (throttle) " << obc->obs.oi << dendl;
-    return false;
-  }
-#endif
-
-  processing_dedup_object++;
-
   if (!obc->obs.oi.is_dirty()) {
     dout(20) << __func__ << " skip (clean) " << obc->obs.oi << dendl;
     osd->logger->inc(l_osd_agent_skip);
