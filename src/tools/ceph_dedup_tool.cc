@@ -553,7 +553,7 @@ private:
   void try_dedup_and_accumulate_result(ObjectItem& object);
   bool ok_to_dedup_all();
   void try_flush();
-  void mark_dedup(chunk_t& chunk);
+  void mark_dedup(chunk_t& chunk, std::vector<AioCompletion*>& completions);
   void mark_non_dedup(ObjectCursor start, ObjectCursor end);
   bufferlist read_object(ObjectItem& object);
   std::vector<std::tuple<bufferlist, pair<uint64_t, uint64_t>>> do_cdc(
@@ -625,8 +625,12 @@ void SampleDedup::crawl() {
         }
       }
     }
+    vector<AioCompletion*> completions;
     for (auto& duplicable_chunk : duplicable_chunks) {
-      mark_dedup(duplicable_chunk);
+      mark_dedup(duplicable_chunk, completions);
+    }
+    for (auto& completion : completions) {
+      completion->wait_for_complete();
     }
   }
   catch (std::exception& e) {
@@ -854,7 +858,8 @@ void SampleDedup::try_flush() {
   }
 }
 
-void SampleDedup::mark_dedup(chunk_t& chunk) {
+void SampleDedup::mark_dedup(chunk_t& chunk,
+  std::vector<AioCompletion*>& completions) {
   if (debug) {
     cout << "set chunk " << chunk.oid << " fp " << chunk.fingerprint << std::endl;
   }
@@ -873,6 +878,7 @@ void SampleDedup::mark_dedup(chunk_t& chunk) {
   }                             
 
   ObjectReadOperation op;
+  AioCompletion* completion = rados.aio_create_completion();
   op.set_chunk(
       chunk.start,
       chunk.size,
@@ -880,10 +886,23 @@ void SampleDedup::mark_dedup(chunk_t& chunk) {
       chunk.fingerprint,
       0,
       CEPH_OSD_OP_FLAG_WITH_REFERENCE);
-  io_ctx.operate(
+  io_ctx.aio_operate(
       chunk.oid,
+      completion,
       &op,
       NULL);
+  completions.push_back(completion);
+
+  ObjectReadOperation op_tier;
+  AioCompletion* completion_tier = rados.aio_create_completion();
+  op_tier.tier_evict();
+  io_ctx.aio_operate(
+      chunk.oid,
+      completion_tier,
+      &op_tier,
+      NULL);
+  completions.push_back(completion_tier);
+
   broadcast_chunk_info(chunk.fingerprint, chunk.size);
 }
 
