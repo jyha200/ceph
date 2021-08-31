@@ -1020,7 +1020,7 @@ void PrimaryLogPG::add_chunk(
     auto iter = chunk_info_store.find(fingerprint);
     if (iter == chunk_info_store.end()) {
       chunk_info_store.insert({fingerprint, chunk_size});
-      dout(1) << "chunk_size " << chunk_size_string << " fingerprint "
+      dout(100) << "chunk_size " << chunk_size_string << " fingerprint "
         << fingerprint << "inserted" << dendl;
     }
     else {
@@ -10886,11 +10886,11 @@ int PrimaryLogPG::finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_
 
 int PrimaryLogPG::finish_set_manifest_refcount(hobject_t oid, int r, ceph_tid_t tid, uint64_t offset)
 {
-  dout(11) << __func__ << " " << oid << " tid " << tid
+  dout(10) << __func__ << " " << oid << " tid " << tid
 	   << " " << cpp_strerror(r) << dendl;
   map<hobject_t,ManifestOpRef>::iterator p = manifest_ops.find(oid);
   if (p == manifest_ops.end()) {
-    dout(1) << __func__ << " no manifest_op found" << dendl;
+    dout(10) << __func__ << " no manifest_op found" << dendl;
     return -EINVAL;
   }
   ManifestOpRef mop = p->second;
@@ -10900,11 +10900,11 @@ int PrimaryLogPG::finish_set_manifest_refcount(hobject_t oid, int r, ceph_tid_t 
     mop->results[0] = r;
   }
   if (mop->num_chunks != mop->results.size()) {
-    dout(1) << __func__ << " not yet " << dendl;
+    dout(10) << __func__ << " not yet " << dendl;
     // there are on-going works
     return -EINPROGRESS;
   }
-  dout(1) << __func__ << " complete " << dendl;
+  dout(10) << __func__ << " complete " << dendl;
 
   if (mop->cb) {
     mop->cb->complete(r);
