@@ -788,7 +788,7 @@ std::vector<std::tuple<bufferlist, pair<uint64_t, uint64_t>>> SampleDedup::do_cd
   bufferlist& data) {
   std::vector<std::tuple<bufferlist, pair<uint64_t, uint64_t>>> ret;
 
-  unique_ptr<CDC> cdc = CDC::create("fastcdc", cbits(chunk_size));
+  unique_ptr<CDC> cdc = CDC::create("fastcdc", cbits(chunk_size) - 1);
   vector<pair<uint64_t, uint64_t>> chunks;
   cdc->calc_chunks(data, &chunks);
   for (auto& p : chunks) {
