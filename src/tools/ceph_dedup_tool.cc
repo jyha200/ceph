@@ -775,6 +775,9 @@ void SampleDedup::try_dedup_and_accumulate_result(ObjectItem& object) {
 bufferlist SampleDedup::read_object(ObjectItem& object) {
   bufferlist whole_data;
   size_t offset = 0;
+  if (debug) {
+    cout << "read object " << object.oid << std::endl;
+  }
   while (true) {
     bufferlist partial_data;
     int ret = io_ctx.read(object.oid, partial_data, max_read_size, offset);
