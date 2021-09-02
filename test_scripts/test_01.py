@@ -26,8 +26,8 @@ def configure_ceph():
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_chunk_algorithm fastcdc", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_cdc_chunk_size " + str(chunk_size), shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool fingerprint_algorithm sha1", shell=True)
-  subprocess.call("sudo bin/ceph osd pool set base_pool target_max_objects 10000", shell=True)
-  subprocess.call("sudo bin/ceph osd pool set base_pool target_max_bytes 1048576000", shell=True)
+  subprocess.call("sudo bin/ceph osd pool set base_pool target_max_objects 1", shell=True)
+  subprocess.call("sudo bin/ceph osd pool set base_pool target_max_bytes 10", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool pg_autoscale_mode off", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool cache_target_full_ratio .9", shell=True)
 
@@ -65,24 +65,29 @@ def process():
     "--src", src_dir,
     "--pool", "base_pool"])
 
-  print("wait 20s\n")
-  time.sleep(20)
+  print("wait 30s\n")
+  time.sleep(30)
 
 # execute shallow crawler
   print("execute shallow crawler\n")
-  command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 1 --shallow-crawling --sampling-ratio 10 --osd-count 3 --wakeup-period 10 --chunk-size " + str(chunk_size)
-  subprocess.call(command, shell=True)
+  shallow_log = open("test_01_shallow.log", "w")
+  command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 4 --shallow-crawling --sampling-ratio 10 --osd-count 3 --wakeup-period 10 --iterative --chunk-size " + str(chunk_size)
+  shallow_crawler = subprocess.Popen(command, shell=True, stdout=shallow_log)
 
   print("wait 20s\n")
-  time.sleep(20)
+  time.sleep(30)
+  shallow_crawler.kill()
+  shallow_log.close()
 
 # execute deep crawler
   print("execute deep crawler\n")
-  command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 1 --sampling-ratio 10 --osd-count 3 --chunk-size" + str(chunk_size)
-  subprocess.call(command, shell=True)
+  deep_log = open("test_01_deep.log", "w")
+  command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 16 --sampling-ratio 10 --osd-count 3 --debug --chunk-size" + str(chunk_size)
+  subprocess.call(command, shell=True, stdout=deep_log)
+  deep_log.close()
 
-  print("wait 20s\n")
-  time.sleep(20)
+  print("wait 30s\n")
+  time.sleep(30)
 
   profiler_process.terminate()
   putter_process.terminate()

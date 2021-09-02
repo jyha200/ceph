@@ -8,7 +8,7 @@ import random
 import sys
 import time
 
-num_files = 1000
+num_files = 100
 skew_ratio = 40
 dedup_ratio = 50
 chunk_size = 8192
@@ -40,8 +40,8 @@ def configure_ceph():
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_chunk_algorithm fastcdc", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_cdc_chunk_size " + str(chunk_size), shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool fingerprint_algorithm sha1", shell=True)
-  subprocess.call("sudo bin/ceph osd pool set base_pool target_max_objects 10000", shell=True)
-  subprocess.call("sudo bin/ceph osd pool set base_pool target_max_bytes 1048576000", shell=True)
+  subprocess.call("sudo bin/ceph osd pool set base_pool target_max_objects 1", shell=True)
+  subprocess.call("sudo bin/ceph osd pool set base_pool target_max_bytes 10", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool pg_autoscale_mode off", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool cache_target_full_ratio .9", shell=True)
 
