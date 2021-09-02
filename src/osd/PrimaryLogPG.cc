@@ -10578,7 +10578,7 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc,
     refs);
 
   bufferlist normal_write_bl;
-  //uint64_t normal_write_offset = 0;
+  uint64_t normal_write_offset = 0;
   pg_t raw_pg;
   object_locator_t oloc(soid);
   oloc.pool = pool.info.get_dedup_tier();
@@ -10595,13 +10595,13 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc,
     ceph_tid_t tid;
     bufferlist& bl = chunks[p.first];
     if (force && !found_in_chunk_info_store(target.oid.name, bl.length())) {
-      mop->new_manifest.chunk_map.erase(p.first);
-      /*
+    //  mop->new_manifest.chunk_map.erase(p.first);
+      
       dout(20) << "chunk fp: " << target.oid.name << " not found"<<dendl; 
       mop->new_manifest.chunk_map[p.first].offset = normal_write_offset;
       mop->new_manifest.chunk_map[p.first].oid = normal_write_target;
       normal_write_offset += mop->new_manifest.chunk_map[p.first].length;
-      normal_write_bl.append(bl);*/
+      normal_write_bl.append(bl);
     } else {
       dout(20) << "chunk fp: " << target.oid.name << " found"<<dendl; 
 
@@ -10621,7 +10621,7 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc,
 
 // write normal object which is not deduplicated
   if (normal_write_bl.length() > 0) {
-    /*
+    
     unsigned flags = CEPH_OSD_FLAG_IGNORE_CACHE | CEPH_OSD_FLAG_IGNORE_OVERLAY |
       CEPH_OSD_FLAG_RWORDERED;
     // make normal write data object and decide its location
@@ -10635,7 +10635,7 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc,
     mop->tids[OFFSET_NON_CHUNK_DATA] = tid;
     dout(20) << __func__ << " oid: " << soid << " tid: " << tid
       << " normal_write_target: " << normal_write_target << " offset: " << OFFSET_NON_CHUNK_DATA
-      << " length: " << normal_write_bl.length() << dendl;*/
+      << " length: " << normal_write_bl.length() << dendl;
   }
 
   if (mop->tids.size()) {
