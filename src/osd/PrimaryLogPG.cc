@@ -14976,6 +14976,10 @@ bool PrimaryLogPG::dedup_cache_work()
   }
 
   std::scoped_lock locker{*this};
+  if (!is_active()) {
+    return false;
+  }
+
   if (!cache_state) {
     dout(20) << __func__ << " no agent state, create one" << dendl;
     cache_state.reset(new TierAgentState);
