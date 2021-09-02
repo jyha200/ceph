@@ -12,6 +12,8 @@ num_files = 1000
 skew_ratio = 20
 dedup_ratio = 50
 chunk_size = 8192
+max_iteration = 2
+
 filepath = os.path.dirname(os.path.abspath(__file__))
 
 def execute_ceph():
@@ -27,9 +29,11 @@ def configure_ceph():
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_cdc_chunk_size " + str(chunk_size), shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool fingerprint_algorithm sha1", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool target_max_objects 10000", shell=True)
-  subprocess.call("sudo bin/ceph osd pool set base_pool target_max_bytes 1048576", shell=True)
+  subprocess.call("sudo bin/ceph osd pool set base_pool target_max_bytes 104857600", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool pg_autoscale_mode off", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool cache_target_full_ratio .9", shell=True)
+  subprocess.call("sudo bin/rbd create test_rbd --size 100G --pool base_pool", shell=True)
+#  subprocess.call("sudo bin/rbd map --pool base_pool test_rbd", shell=True)
 
 def process():
   global ceph_bin_abs_path
@@ -57,40 +61,47 @@ def process():
     "--log", "test_01.log"], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
 
 # put objects
-  print("put object in background\n")
-  src_dir = "test_files_" + str(num_files) + "_" + str(skew_ratio) + "_" + str(dedup_ratio)
-  putter_process = subprocess.Popen(\
-    ["./process_object.py",\
-    "--ceph", ceph_bin_abs_path,\
-    "--src", src_dir,
-    "--pool", "base_pool"])
+  print("Do fio in background\n")
+  fio_log = open("test_01_fio.log", "w")
+  fio_process = subprocess.Popen("sudo fio --ioengine rbd --clientname admin --pool base_pool --rbdname test_rbd --invalidate 0 --direct 1 --bsrange 4m-4m --time_based --runtime 100000 --name test --readwrite randwrite --status-interval 1 --dedupe_percentage 50",
+    shell=True, stdout=fio_log)
+  start = time.time()
 
-  print("wait 30s\n")
-  time.sleep(30)
+  for iteration in range(0,max_iteration):
+    print("iteration " + str(iteration) +" " + str(time.time() - start) + "\n")
+    print("wait 120s\n")
+    time.sleep(120)
 
 # execute shallow crawler
-  print("execute shallow crawler\n")
-  shallow_log = open("test_01_shallow.log", "w")
-  command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 4 --shallow-crawling --sampling-ratio 10 --osd-count 3 --wakeup-period 10 --iterative --chunk-size " + str(chunk_size)
-  shallow_crawler = subprocess.Popen(command, shell=True, stdout=shallow_log)
+    print("execute shallow crawler " + str(time.time() - start) + "\n")
+    shallow_log = open("test_01_shallow.log", "w")
+    command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 4 --shallow-crawling --sampling-ratio 10 --osd-count 3 --wakeup-period 10 --iterative --chunk-size " + str(chunk_size) 
+    shallow_crawler = subprocess.Popen(command, shell=True, stdout=shallow_log)
 
-  print("wait 20s\n")
-  time.sleep(30)
-  shallow_crawler.kill()
-  shallow_log.close()
+    print("wait 120s\n")
+    time.sleep(120)
+    shallow_crawler.kill()
+    shallow_crawler.wait()
+    subprocess.call("sudo pkill -9 dedup-tool", shell=True)
+    shallow_log.close()
+    print("execute shallow crawler done " + str(time.time() - start) + "\n")
 
 # execute deep crawler
-  print("execute deep crawler\n")
-  deep_log = open("test_01_deep.log", "w")
-  command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 16 --sampling-ratio 10 --osd-count 3 --debug --chunk-size" + str(chunk_size)
-  subprocess.call(command, shell=True, stdout=deep_log)
-  deep_log.close()
+    print("execute deep crawler " + str(time.time() - start) + "\n")
+    deep_log = open("test_01_deep.log", "w")
+    command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 16 --sampling-ratio 10 --osd-count 3 --debug --chunk-size" + str(chunk_size)
+    subprocess.call(command, shell=True, stdout=deep_log)
+    deep_log.close()
+    print("execute deep crawler done" + str(time.time() - start) + "\n")
 
-  print("wait 30s\n")
-  time.sleep(30)
+    print("wait 120s\n")
+    time.sleep(120)
 
   profiler_process.terminate()
-  putter_process.terminate()
+  fio_process.terminate()
+  fio_process.wait()
+  subprocess.call("sudo pkill -9 fio", shell=True)
+  fio_log.close()
 
 def parse_arguments():
   parser = argparse.ArgumentParser()

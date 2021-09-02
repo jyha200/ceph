@@ -41,9 +41,10 @@ def configure_ceph():
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_cdc_chunk_size " + str(chunk_size), shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool fingerprint_algorithm sha1", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool target_max_objects 10000", shell=True)
-  subprocess.call("sudo bin/ceph osd pool set base_pool target_max_bytes 1048576", shell=True)
+  subprocess.call("sudo bin/ceph osd pool set base_pool target_max_bytes 104857600", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool pg_autoscale_mode off", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool cache_target_full_ratio .9", shell=True)
+  subprocess.call("sudo bin/rbd create test_rbd --size 100G --pool base_pool", shell=True)
 
 def process():
   global ceph_bin_abs_path
@@ -75,22 +76,21 @@ def process():
 
 # execute shallow crawler
     print("execute shallow crawler\n")
-    command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 4 --shallow-crawling --sampling-ratio 10 --osd-count 3 --wakeup-period 30 --iterative --chunk-size " + str(chunk_size)
+    command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 4 --shallow-crawling --sampling-ratio 10 --osd-count 3 --wakeup-period 10 --iterative --chunk-size " + str(chunk_size)
 #    shallow_crawler = subprocess.Popen(command, shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
 
+    print("Do fio in background\n")
+    fio_log = open("test_04_fio_chunk_"+str(chunk_size) + ".log", "w")
+    fio_process = subprocess.Popen("sudo fio --ioengine rbd --clientname admin --pool base_pool --rbdname test_rbd --invalidate 0 --direct 1 --bsrange 4m-4m --time_based --runtime 100000 --name test --readwrite randwrite --status-interval 1 --dedupe_percentage 50",
+      shell=True, stdout=fio_log)
 
-# put objects
-    print("put object\n")
-    src_dir = "test_files_" + str(num_files) + "_" + str(skew_ratio) + "_" + str(dedup_ratio)
-    subprocess.call(\
-        ["./process_object.py",\
-        "--ceph", ceph_bin_abs_path,\
-        "--src", src_dir,
-        "--pool", "base_pool"])
-    wait()
+    time.sleep(200)
 
     profiler_process.terminate()
-#    shallow_crawler.terminate()
+    shallow_crawler.kill()
+    shallow_crawler.wait()
+    fio_process.terminate()
+    fio_process.wait()
     subprocess.call("sudo pkill -9 ceph", shell=True)
 
 def parse_arguments():
