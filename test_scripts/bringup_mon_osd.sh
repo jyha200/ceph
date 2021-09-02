@@ -6,7 +6,7 @@ bringup_mon() {
   sudo ../build/bin/ceph-authtool --create-keyring /etc/ceph/bootstrap-osd/ceph.keyring --gen-key -n client.bootstrap-osd --cap mon 'profile bootstrap-osd'
   sudo ../build/bin/ceph-authtool /tmp/ceph.mon.keyring --import-keyring /etc/ceph/ceph.client.admin.keyring
   sudo ../build/bin/ceph-authtool /tmp/ceph.mon.keyring --import-keyring /etc/ceph/bootstrap-osd/ceph.keyring
-  sudo ../build/bin/monmaptool --clobber --create --add fg4 192.168.1.144 --fsid 6b6420d2-41af-4377-9a4d-de4b9dcfaf1e /tmp/monmap
+  sudo ../build/bin/monmaptool --clobber --create --add fg4 10.0.0.40 --fsid 6b6420d2-41af-4377-9a4d-de4b9dcfaf1e /tmp/monmap
   rm -r /var/lib/ceph/mon/ceph-fg4
   sudo -u ceph mkdir /var/lib/ceph/mon/ceph-fg4
   sudo -u ceph ../build/bin/ceph-mon --mkfs -i fg4 --monmap /tmp/monmap --keyring /tmp/ceph.mon.keyring
@@ -32,7 +32,7 @@ bringup_osd() {
   sudo ../build/bin/ceph-authtool --create-keyring /var/lib/ceph/osd/ceph-$ID/keyring --name osd.$ID --add-key $OSD_SECRET
   sudo ../build/bin/ceph-osd -i $ID --mkfs --osd-uuid $UUID
   sudo chown -R ceph:ceph /var/lib/ceph/osd/ceph-$ID
-  sudo ../build/bin/ceph-osd -i $ID
+  sudo ../build/bin/ceph-osd -i $ID --debug-osd 1
 }
 
 execute_remote_cmd() {
@@ -74,11 +74,12 @@ bringup_osd_remote() {
 }
 
 sudo pkill -9 ceph
-execute_remote_cmd "pkill -9 ceph" jyha 192.168.1.143
+execute_remote_cmd "pkill -9 ceph" jyha 10.0.0.10
+execute_remote_cmd "pkill -9 ceph" jyha 10.0.0.30
 sudo cp ./ceph.conf /etc/ceph/ceph.conf
 
 bringup_mon
 bringup_mgr
 bringup_osd /dev/nvme0n1
-bringup_osd_remote jyha 192.168.1.143 /home/jyha/ceph/ /dev/nvme2n1
-bringup_osd_remote jyha 192.168.1.143 /home/jyha/ceph/ /dev/nvme1n1
+bringup_osd_remote jyha 10.0.0.10 /home/jyha/ceph/ /dev/nvme2n1
+bringup_osd_remote jyha 10.0.0.30 /home/jyha/ceph/ /dev/nvme1n1

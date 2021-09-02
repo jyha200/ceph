@@ -40,8 +40,8 @@ def configure_ceph():
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_chunk_algorithm fastcdc", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_cdc_chunk_size " + str(chunk_size), shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool fingerprint_algorithm sha1", shell=True)
-  subprocess.call("sudo bin/ceph osd pool set base_pool target_max_objects 1", shell=True)
-  subprocess.call("sudo bin/ceph osd pool set base_pool target_max_bytes 10", shell=True)
+  subprocess.call("sudo bin/ceph osd pool set base_pool target_max_objects 10000", shell=True)
+  subprocess.call("sudo bin/ceph osd pool set base_pool target_max_bytes 1048576", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool pg_autoscale_mode off", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool cache_target_full_ratio .9", shell=True)
 
@@ -75,7 +75,7 @@ def process():
 
 # execute shallow crawler
     print("execute shallow crawler\n")
-    command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 1 --shallow-crawling --sampling-ratio 10 --osd-count 3 --wakeup-period 30 --iterative --chunk-size " + str(chunk_size)
+    command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 4 --shallow-crawling --sampling-ratio 10 --osd-count 3 --wakeup-period 30 --iterative --chunk-size " + str(chunk_size)
 #    shallow_crawler = subprocess.Popen(command, shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
 
 
