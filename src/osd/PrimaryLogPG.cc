@@ -12973,7 +12973,7 @@ void PrimaryLogPG::on_flushed()
     while (object_contexts.get_next(i.first, &i)) {
       derr << __func__ << ": object " << i.first << " obc still alive" << dendl;
     }
-    ceph_assert(object_contexts.empty());
+//    ceph_assert(object_contexts.empty());
   }
 }
 
