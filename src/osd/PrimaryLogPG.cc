@@ -15187,6 +15187,7 @@ bool PrimaryLogPG::dedup_evict(ObjectContextRef obc)
 
     if (total_bytes == 0) {
       dout(20) << __func__ << " skip (no chunk to evict) " << obc->obs.oi << dendl;
+      close_op_ctx(ctx.release());
       return false;
     }
 
