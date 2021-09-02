@@ -1020,7 +1020,7 @@ void PrimaryLogPG::add_chunk(
     auto iter = chunk_info_store.find(fingerprint);
     if (iter == chunk_info_store.end()) {
       chunk_info_store.insert({fingerprint, chunk_size});
-      dout(100) << "chunk_size " << chunk_size_string << " fingerprint "
+      dout(10) << "chunk_size " << chunk_size_string << " fingerprint "
         << fingerprint << "inserted" << dendl;
     }
     else {
@@ -7485,7 +7485,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
         for (auto &p : obs.oi.manifest.chunk_map) {
           p.second.set_flag(chunk_info_t::FLAG_MISSING);
           // punch hole
-          t->zero(soid, p.second.offset, p.second.length);
+          t->zero(soid, p.first, p.second.length);
         }
         oi.clear_data_digest();
         ctx->delta_stats.num_wr++;
@@ -10529,7 +10529,8 @@ struct C_Flush : public Context {
   }
 };
 
-int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc, bool force)
+int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc,
+  std::optional<std::function<void()>> &&on_flush, bool force)
 {
   const object_info_t& oi = obc->obs.oi;
   const hobject_t& soid = oi.soid;
@@ -10577,7 +10578,7 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc, bool force)
     refs);
 
   bufferlist normal_write_bl;
-  uint64_t normal_write_offset = 0;
+  //uint64_t normal_write_offset = 0;
   pg_t raw_pg;
   object_locator_t oloc(soid);
   oloc.pool = pool.info.get_dedup_tier();
@@ -10594,6 +10595,7 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc, bool force)
     ceph_tid_t tid;
     bufferlist& bl = chunks[p.first];
     if (force && !found_in_chunk_info_store(target.oid.name, bl.length())) {
+      mop->new_manifest.chunk_map.erase(p.first);
       /*
       dout(20) << "chunk fp: " << target.oid.name << " not found"<<dendl; 
       mop->new_manifest.chunk_map[p.first].offset = normal_write_offset;
@@ -10602,10 +10604,6 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc, bool force)
       normal_write_bl.append(bl);*/
     } else {
       dout(20) << "chunk fp: " << target.oid.name << " found"<<dendl; 
-      C_SetDedupChunks *fin = new C_SetDedupChunks(this, soid, get_last_peering_reset(), p.first);
-      tid = refcount_manifest(soid, target, refcount_t::CREATE_OR_GET_REF, 
-          fin, move(bl));
-      fin->tid = tid;
 
       mop->chunks[target] = make_pair(p.first, p.second.length());
       mop->num_chunks++;
@@ -10613,6 +10611,11 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc, bool force)
       dout(10) << __func__ << " oid: " << soid << " tid: " << tid
         << " target: " << target << " offset: " << p.first
         << " length: " << p.second.length() << dendl;
+
+      C_SetDedupChunks *fin = new C_SetDedupChunks(this, soid, get_last_peering_reset(), p.first);
+      tid = refcount_manifest(soid, target, refcount_t::CREATE_OR_GET_REF, 
+          fin, move(chunks[p.first]));
+      fin->tid = tid;
     }
   }
 
@@ -10634,35 +10637,15 @@ int PrimaryLogPG::start_dedup(OpRequestRef op, ObjectContextRef obc, bool force)
       << " normal_write_target: " << normal_write_target << " offset: " << OFFSET_NON_CHUNK_DATA
       << " length: " << normal_write_bl.length() << dendl;*/
   }
-  else {
-#if 0
-    // remove old normally written object
-    unsigned flags = CEPH_OSD_FLAG_IGNORE_CACHE | CEPH_OSD_FLAG_IGNORE_OVERLAY |
-      CEPH_OSD_FLAG_RWORDERED;
-    C_SetDedupChunks *fin = new C_SetDedupChunks(this, soid, get_last_peering_reset(), OFFSET_NON_CHUNK_DATA);
-    Context *c = new C_OnFinisher(fin, osd->get_objecter_finisher(get_pg_shard()));
-    ceph_tid_t tid = osd->objecter->remove(
-        normal_write_target.oid,
-        oloc,
-        SnapContext(),
-        ceph::real_clock::from_ceph_timespec(obc->obs.oi.mtime),
-        flags,
-        c);
-    fin->tid = tid;
-    mop->chunks[normal_write_target] = make_pair(OFFSET_NON_CHUNK_DATA, normal_write_bl.length());
-    mop->num_chunks++;
-    mop->tids[OFFSET_NON_CHUNK_DATA] = tid;
-    dout(20) << __func__ << " oid: " << soid << " tid: " << tid
-      << " remove eormal_write_target: " << normal_write_target << " offset: " << OFFSET_NON_CHUNK_DATA
-      << " length: " << normal_write_bl.length() << dendl;
-#endif
-  }
 
   if (mop->tids.size()) {
+    mop->on_flush = std::move(on_flush);
     manifest_ops[soid] = mop;
     manifest_ops[soid]->op = op;
   } else {
-    // size == 0
+    if (on_flush) {
+      (*(on_flush))();
+    }
     return 0;
   }
 
@@ -10725,6 +10708,7 @@ int PrimaryLogPG::do_cdc(const object_info_t& oi,
     chunk_map[p.first] = chunk_info_t(0, p.second, target);
     total_length += p.second;
   }
+
   return total_length;
 }
 
@@ -10784,6 +10768,11 @@ int PrimaryLogPG::finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_
       osd->reply_op_error(mop->op, -EINVAL);
     return -EINVAL;
   }
+  if (obc->is_blocked()){
+    obc->stop_block();
+  }
+  kick_object_context_blocked(obc);
+
   if (mop->results[0] < 0) {
     // check if the previous op returns fail
     ceph_assert(mop->num_chunks == mop->results.size());
@@ -10848,19 +10837,18 @@ int PrimaryLogPG::finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_
 
     // set new references
     ctx->new_obs.oi.manifest.chunk_map = mop->new_manifest.chunk_map;
-    dout(10) << __func__ << ctx->new_obs.oi.manifest.chunk_map << dendl;
 
     finish_ctx(ctx.get(), pg_log_entry_t::CLEAN);
     simple_opc_submit(std::move(ctx));
 
   }
-  if (obc->is_blocked()){
-    obc->stop_block();
-  }
-  kick_object_context_blocked(obc);
 
   if (mop->op)
     osd->reply_op_error(mop->op, r);
+  if (mop->on_flush) {
+    (*(mop->on_flush))();
+    mop->on_flush = std::nullopt;
+  }
 
   manifest_ops.erase(oid);
 
@@ -11001,7 +10989,7 @@ int PrimaryLogPG::start_flush(
   }
 
   if (dedup || (obc->obs.oi.has_manifest() && obc->obs.oi.manifest.is_chunked())) {
-    int r = start_dedup(op, obc, dedup);
+    int r = start_dedup(op, obc, std::move(on_flush), dedup);
     if (r != -EINPROGRESS) {
       if (blocking)
 	obc->stop_block();
@@ -15166,6 +15154,7 @@ bool PrimaryLogPG::dedup_evict(ObjectContextRef obc)
   {
     auto null_op_req = OpRequestRef();
     OpContextUPtr ctx = simple_opc_create(obc);
+
     if (!ctx->lock_manager.get_lock_type(
           RWState::RWWRITE,
           obc->obs.oi.soid,
@@ -15176,19 +15165,40 @@ bool PrimaryLogPG::dedup_evict(ObjectContextRef obc)
       return false;
     }
 
+    dout(20) << __func__ << " evicting " << obc->obs.oi << dendl;
     ctx->at_version = get_next_version();
     ctx->new_obs = obc->obs;
     ObjectState& obs = ctx->new_obs;
     object_info_t& oi = obs.oi;
     const hobject_t& soid = oi.soid;
+    uint64_t total_bytes = 0;
+    PGTransaction* t = ctx->op_t.get();
     // The chunks already has a reference, so it is just enough to invoke truncate if necessary
     for (auto &p : obs.oi.manifest.chunk_map) {
+      if (p.second.is_missing()) {
+        continue;
+      }
       p.second.set_flag(chunk_info_t::FLAG_MISSING);
       // punch hole
-      ctx->delta_stats.num_bytes -= p.second.length;
-      PGTransaction* t = ctx->op_t.get();
-      t->zero(soid, p.second.offset, p.second.length);
+      total_bytes += p.second.length;
+      dout(30) << __func__ << " zero offset  " << p.first << "length " << p.second.length<< dendl;
+      t->zero(soid, p.first, p.second.length);
     }
+
+    if (total_bytes == 0) {
+      dout(20) << __func__ << " skip (no chunk to evict) " << obc->obs.oi << dendl;
+      return false;
+    }
+
+    hobject_t soid2 = soid;
+
+    ctx->register_on_finish([this, soid2, oi]() {
+      dout(20) << __func__ << " evicting done " <<  soid2 << " size " << oi.size<<dendl;
+    });
+
+    uint64_t prev_size = obs.oi.size;
+    ctx->delta_stats.num_bytes -= total_bytes;
+    dout(20) << __func__ << " evicting " << soid << " size " <<  total_bytes << " prev size " << prev_size << dendl;
     oi.clear_data_digest();
     ctx->delta_stats.num_wr++;
     ctx->cache_operation = true;
@@ -15254,9 +15264,14 @@ bool PrimaryLogPG::dedup_flush(ObjectContextRef obc) {
   obc->obs.oi.set_flag(object_info_t::FLAG_MANIFEST);
   obc->obs.oi.manifest.type = object_manifest_t::TYPE_CHUNKED;
 
+  std::function<void()> on_flush = [this, oid]() {
+    dout(20) << " flush finished " << oid << dendl;
+    osd->agent_finish_op(oid);
+  };
+
   int result = start_flush(
     OpRequestRef(), obc, true, NULL,
-   std::nullopt, true);
+   on_flush, true);
   if (result != -EINPROGRESS) {
     dout(20) << __func__ << " start_flush() failed " << obc->obs.oi
       << " with " << result << dendl;

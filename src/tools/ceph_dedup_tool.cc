@@ -581,6 +581,8 @@ private:
     std::list<chunk_t> found_chunks;
     chunk_t first_chunk;
   };
+  std::set<std::string> broadcasted_fp;
+  std::set<std::string> oid_for_evict;
   std::unordered_map<std::string, fp_store_entry_t> instant_fingerprint_store;
   std::vector<ObjectItem> all_shard_objects;
   std::list<string> dedupable_objects;
@@ -591,15 +593,18 @@ private:
 SampleDedup::crawl_mode_t default_crawl_mode = SampleDedup::crawl_mode_t::DEEP;
 
 void SampleDedup::broadcast_chunk_info(string& fingerprint, size_t chunk_size){
-  bufferlist inbl, outbl;
-  string cmd = string("{\"prefix\": \"add_chunk_info\",\"fingerprint\":\"")
-    + fingerprint
-    + string("\",\"chunk_size\":\"")
-    + to_string(chunk_size)
-    + string("\"}");
+  if (broadcasted_fp.find(fingerprint) == broadcasted_fp.end()) {
+    bufferlist inbl, outbl;
+    string cmd = string("{\"prefix\": \"add_chunk_info\",\"fingerprint\":\"")
+      + fingerprint
+      + string("\",\"chunk_size\":\"")
+      + to_string(chunk_size)
+      + string("\"}");
 
-  for (int osd = 0 ; osd < osd_count ; osd++) {
-    rados.osd_command(osd, cmd, inbl, &outbl, NULL);
+    for (int osd = 0 ; osd < osd_count ; osd++) {
+      rados.osd_command(osd, cmd, inbl, &outbl, NULL);
+    }
+    broadcasted_fp.insert(fingerprint);
   }
 }
 
@@ -628,6 +633,21 @@ void SampleDedup::crawl() {
     vector<AioCompletion*> completions;
     for (auto& duplicable_chunk : duplicable_chunks) {
       mark_dedup(duplicable_chunk, completions);
+    }
+    for (auto& completion : completions) {
+      completion->wait_for_complete();
+    }
+    completions.clear();
+    for (auto& oid : oid_for_evict) {
+      ObjectReadOperation op_tier;
+      AioCompletion* completion_tier = rados.aio_create_completion();
+      op_tier.tier_evict();
+      io_ctx.aio_operate(
+          oid,
+          completion_tier,
+          &op_tier,
+          NULL);
+      completions.push_back(completion_tier);
     }
     for (auto& completion : completions) {
       completion->wait_for_complete();
@@ -895,17 +915,7 @@ void SampleDedup::mark_dedup(chunk_t& chunk,
       &op,
       NULL);
   completions.push_back(completion);
-
-  ObjectReadOperation op_tier;
-  AioCompletion* completion_tier = rados.aio_create_completion();
-  op_tier.tier_evict();
-  io_ctx.aio_operate(
-      chunk.oid,
-      completion_tier,
-      &op_tier,
-      NULL);
-  completions.push_back(completion_tier);
-
+  oid_for_evict.insert(chunk.oid);
   broadcast_chunk_info(chunk.fingerprint, chunk.size);
 }
 

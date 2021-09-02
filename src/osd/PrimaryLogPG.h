@@ -288,7 +288,7 @@ public:
     std::map<hobject_t, pair<uint64_t, uint64_t>> chunks;
     uint64_t num_chunks = 0;
     object_manifest_t new_manifest;
-    
+    std::optional<std::function<void()>> on_flush; ///< callback, may be null
 
     ManifestOp(RefCountCallback* cb)
       : cb(cb) {}
@@ -1478,7 +1478,8 @@ protected:
 			   OSDOp& osd_op);
   int do_cdc(const object_info_t& oi, std::map<uint64_t, chunk_info_t>& chunk_map,
 	     std::map<uint64_t, bufferlist>& chunks);
-  int start_dedup(OpRequestRef op, ObjectContextRef obc, bool force);
+  int start_dedup(OpRequestRef op, ObjectContextRef obc,
+    std::optional<std::function<void()>> &&on_flush, bool force);
   bool found_in_chunk_info_store(string& fingerprint, size_t size);
   hobject_t get_fpoid_from_chunk(const hobject_t soid, bufferlist& chunk);
   int finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_t offset);
