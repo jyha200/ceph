@@ -550,9 +550,10 @@ private:
     ObjectCursor end,
     size_t max_object_count);
   std::set<size_t> sample_object(size_t count);
-  void try_dedup_and_accumulate_result(ObjectItem& object);
+  void try_dedup_and_accumulate_result(ObjectItem& object,
+    std::vector<AioCompletion*>& completions);
   bool ok_to_dedup_all();
-  void try_flush();
+  AioCompletion* flush(ObjectItem& object);
   void mark_dedup(chunk_t& chunk, std::vector<AioCompletion*>& completions);
   void mark_non_dedup(ObjectCursor start, ObjectCursor end);
   bufferlist read_object(ObjectItem& object);
@@ -615,6 +616,7 @@ void SampleDedup::crawl() {
     ObjectCursor shard_end;
     std::tie(shard_start, shard_end) = get_shard_boundary();
 
+    vector<AioCompletion*> completions;
     for (ObjectCursor current_object = shard_start; current_object < shard_end; ) {
       std::vector<ObjectItem> objects;
       std::tie(objects, current_object) = get_objects(current_object, shard_end, 10000);
@@ -626,11 +628,10 @@ void SampleDedup::crawl() {
       for (size_t index : sampled_indexes) {
         ObjectItem target = objects[index];
         if (is_dirty(target)) {
-          try_dedup_and_accumulate_result(target);
+          try_dedup_and_accumulate_result(target, completions);
         }
       }
     }
-    vector<AioCompletion*> completions;
     for (auto& duplicable_chunk : duplicable_chunks) {
       mark_dedup(duplicable_chunk, completions);
     }
@@ -738,7 +739,8 @@ std::set<size_t> SampleDedup::sample_object(size_t count) {
   return indexes;
 }
 
-void SampleDedup::try_dedup_and_accumulate_result(ObjectItem& object) {
+void SampleDedup::try_dedup_and_accumulate_result(ObjectItem& object,
+  std::vector<AioCompletion*>& completions) {
   bufferlist data = read_object(object);
   auto chunks = do_cdc(object, data);
   size_t duplicated_size = 0;
@@ -782,10 +784,7 @@ void SampleDedup::try_dedup_and_accumulate_result(ObjectItem& object) {
     if (debug) {
       cout << "dedup object " << object.oid << std::endl;
     }
-    if (debug) {
-      cout << "dedup object done " << object.oid << std::endl;
-    }
-
+    completions.push_back(flush(object));
   }
 
   total_duplicated_size += duplicated_size;
@@ -866,19 +865,20 @@ bool SampleDedup::check_object_dedup(size_t dedup_size, size_t total_size) {
   return false;
 }
 
-void SampleDedup::try_flush() {
-  for (auto object : all_shard_objects) {
-    ObjectReadOperation op;
-    op.tier_flush();
-    if (debug) {
-      cout << "try flush " << object.oid << std::endl;
-    }
+AioCompletion* SampleDedup::flush(ObjectItem& object) {
+  ObjectReadOperation op;
+  AioCompletion* completion = rados.aio_create_completion();
+  op.tier_flush();
+  if (debug) {
+    cout << "try flush " << object.oid << std::endl;
+  }
 
-    io_ctx.operate(
+  io_ctx.aio_operate(
       object.oid,
+      completion,
       &op,
       NULL);
-  }
+  return completion;
 }
 
 void SampleDedup::mark_dedup(chunk_t& chunk,
