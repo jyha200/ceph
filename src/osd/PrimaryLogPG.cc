@@ -15715,6 +15715,7 @@ bool PrimaryLogPG::cache_choose_mode(OpRequestRef op)
     return requeued;
   }
 
+  TierAgentState::flush_mode_t flush_mode = TierAgentState::FLUSH_MODE_IDLE;
   TierAgentState::evict_mode_t evict_mode = TierAgentState::EVICT_MODE_IDLE;
   unsigned evict_effort = 0;
   dout(20) << __func__ << " hit_set_period " << pool.info.cache_hit_set_period
@@ -15786,6 +15787,24 @@ bool PrimaryLogPG::cache_choose_mode(OpRequestRef op)
 	   << " full " << ((float)full_micro / 1000000.0)
 	   << dendl;
 
+// flush mode
+  uint64_t flush_target = pool.info.cache_target_dirty_ratio_micro;
+  uint64_t flush_high_target = pool.info.cache_target_dirty_high_ratio_micro;
+  uint64_t flush_slop = (float)flush_target * cct->_conf->osd_agent_slop;
+  if ( cache_state->flush_mode == TierAgentState::FLUSH_MODE_IDLE) {
+    flush_target += flush_slop;
+    flush_high_target += flush_slop;
+  } else {
+    flush_target -= std::min(flush_target, flush_slop);
+    flush_high_target -= std::min(flush_high_target, flush_slop);
+  }
+
+  if (dirty_micro > flush_high_target) {
+    flush_mode = TierAgentState::FLUSH_MODE_HIGH;
+  } else if (dirty_micro > flush_target || (!flush_target && num_dirty > 0)) {
+    flush_mode = TierAgentState::FLUSH_MODE_LOW;
+  }
+
   // evict mode
   uint64_t evict_target = pool.info.cache_full_ratio_micro;
   uint64_t evict_slop = (float)evict_target * cct->_conf->osd_agent_slop;
@@ -15824,7 +15843,31 @@ bool PrimaryLogPG::cache_choose_mode(OpRequestRef op)
 	   << dendl;
   }
 
-  skip_calc:
+skip_calc:
+  if (flush_mode != cache_state->flush_mode) {
+    dout(5) << __func__ << " flush_mode "
+	    << TierAgentState::get_flush_mode_name(cache_state->flush_mode)
+	    << " -> "
+	    << TierAgentState::get_flush_mode_name(flush_mode)
+	    << dendl;
+    recovery_state.update_stats(
+      [=](auto &history, auto &stats) {
+	if (flush_mode == TierAgentState::FLUSH_MODE_HIGH) {
+	  osd->agent_inc_high_count();
+	  stats.stats.sum.num_flush_mode_high = 1;
+	} else if (flush_mode == TierAgentState::FLUSH_MODE_LOW) {
+	  stats.stats.sum.num_flush_mode_low = 1;
+	}
+	if (cache_state->flush_mode == TierAgentState::FLUSH_MODE_HIGH) {
+	  osd->agent_dec_high_count();
+	  stats.stats.sum.num_flush_mode_high = 0;
+	} else if (cache_state->flush_mode == TierAgentState::FLUSH_MODE_LOW) {
+	  stats.stats.sum.num_flush_mode_low = 0;
+	}
+	return false;
+      });
+    cache_state->flush_mode = flush_mode;
+  }
   if (evict_mode != cache_state->evict_mode) {
     dout(5) << __func__ << " evict_mode "
 	    << TierAgentState::get_evict_mode_name(cache_state->evict_mode)
