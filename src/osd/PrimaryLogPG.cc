@@ -7430,19 +7430,21 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
       {
 	if (pool.info.is_tier()) {
 	  result = -EINVAL;
+          ceph_assert(false);
 	  break;
 	}
 	if (!obs.exists) {
 	  result = -ENOENT;
+          ceph_assert(false);
 	  break;
 	}
 	if (get_osdmap()->require_osd_release < ceph_release_t::octopus) {
 	  result = -EOPNOTSUPP;
+          ceph_assert(false);
 	  break;
 	}
 
 	if (oi.is_dirty()) {
-          // Flush cold object only
           bool force = false;
           try {
             decode(force, bp);
@@ -7451,6 +7453,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
             result = -EINVAL;
             goto fail;
           }
+          ceph_assert(force);
 
           result = start_flush(ctx->op, ctx->obc, true, NULL, std::nullopt, force);
           if (result == -EINPROGRESS){
@@ -7474,10 +7477,6 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	}
 	if (get_osdmap()->require_osd_release < ceph_release_t::octopus) {
 	  result = -EOPNOTSUPP;
-	  break;
-	}
-	if (!obs.oi.has_manifest()) {
-	  result = -EINVAL;
 	  break;
 	}
 
@@ -10837,6 +10836,29 @@ int PrimaryLogPG::finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_
 
     // set new references
     ctx->new_obs.oi.manifest.chunk_map = mop->new_manifest.chunk_map;
+
+    dout(20) << __func__ << " evicting " << obc->obs.oi << dendl;
+    uint64_t total_bytes = 0;
+    PGTransaction* t = ctx->op_t.get();
+    // The chunks already has a reference, so it is just enough to invoke truncate if necessary
+    for (auto &p : ctx->new_obs.oi.manifest.chunk_map) {
+      if (p.second.is_missing()) {
+        continue;
+      }
+      p.second.set_flag(chunk_info_t::FLAG_MISSING);
+      // punch hole
+      total_bytes += p.second.length;
+      dout(30) << __func__ << " zero offset  " << p.first << "length " << p.second.length<< dendl;
+      t->zero(oid, p.first, p.second.length);
+    }
+
+    ctx->at_version = get_next_version();
+
+    uint64_t prev_size = obc->obs.oi.size;
+    ctx->delta_stats.num_bytes -= total_bytes;
+    ctx->new_obs.oi.clear_data_digest();
+    ctx->delta_stats.num_wr++;
+    ctx->cache_operation = true;
 
     finish_ctx(ctx.get(), pg_log_entry_t::CLEAN);
     simple_opc_submit(std::move(ctx));
