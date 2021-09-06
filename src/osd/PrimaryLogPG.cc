@@ -15044,7 +15044,7 @@ bool PrimaryLogPG::dedup_cache_work()
   uint64_t evict_count = 0;
   uint64_t flush_count = 0;
   int ls_min = 1;
-  int ls_max = 50;
+  int ls_max = 10;
   vector<hobject_t> ls;
   hobject_t next;
   int r = pgbackend->objects_list_partial(cache_state->position, ls_min, ls_max,

@@ -878,6 +878,7 @@ AioCompletion* SampleDedup::flush(ObjectItem& object) {
       completion,
       &op,
       NULL);
+  oid_for_evict.insert(object.oid);
   return completion;
 }
 

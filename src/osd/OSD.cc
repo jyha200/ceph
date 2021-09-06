@@ -593,7 +593,7 @@ void OSDService::dedup_cache_entry()
       if (p->is_primary()) {
         bool processed = p->dedup_cache_work();
 //        if (processed == false) {
-         usleep(5000000);
+         usleep(1000000);
 //        }
       }
     }
