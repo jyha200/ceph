@@ -10852,13 +10852,13 @@ int PrimaryLogPG::finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_
       t->zero(oid, p.first, p.second.length);
     }
 
-    ctx->at_version = get_next_version();
-
-    uint64_t prev_size = obc->obs.oi.size;
-    ctx->delta_stats.num_bytes -= total_bytes;
-    ctx->new_obs.oi.clear_data_digest();
-    ctx->delta_stats.num_wr++;
-    ctx->cache_operation = true;
+    if (total_bytes > 0) {
+      uint64_t prev_size = obc->obs.oi.size;
+      ctx->delta_stats.num_bytes -= total_bytes;
+      ctx->new_obs.oi.clear_data_digest();
+      ctx->delta_stats.num_wr++;
+      ctx->cache_operation = true;
+    }
 
     finish_ctx(ctx.get(), pg_log_entry_t::CLEAN);
     simple_opc_submit(std::move(ctx));
@@ -15074,10 +15074,11 @@ bool PrimaryLogPG::dedup_cache_work()
   ceph_assert(r >= 0);
   for (vector<hobject_t>::iterator p = ls.begin(); p != ls.end(); ++p) {
     ObjectContextRef obc = get_object_context(*p, false, NULL);
-    if (dedup_evict(obc)) {
+/*    if (dedup_evict(obc)) {
       evict_count++;
     }
-    else if (dedup_flush(obc)) {
+    else*/
+    if (dedup_flush(obc)) {
       flush_count++;
     }
   }
