@@ -868,7 +868,7 @@ bool SampleDedup::check_object_dedup(size_t dedup_size, size_t total_size) {
 AioCompletion* SampleDedup::flush(ObjectItem& object) {
   ObjectReadOperation op;
   AioCompletion* completion = rados.aio_create_completion();
-  op.tier_flush();
+  op.tier_flush(true);
   if (debug) {
     cout << "try flush " << object.oid << std::endl;
   }
