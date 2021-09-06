@@ -8,9 +8,6 @@ import random
 import sys
 import time
 
-num_files = 100
-skew_ratio = 40
-dedup_ratio = 50
 chunk_size = 8192
 filepath = os.path.dirname(os.path.abspath(__file__))
 
@@ -50,12 +47,6 @@ def process():
   global ceph_bin_abs_path
   ceph_bin_abs_path = os.path.abspath(args.ceph)
   print ("4. Dedup ratio and metadata according to chunk size\n")
-
-# generate test files
-  if (args.skip_new_file == 0):
-    print("generate test files\n")
-    command = './generate_files.py -n ' + str(num_files) + ' -d ' + str(skew_ratio) + ' -r ' + str(dedup_ratio)
-    subprocess.call(command, shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
 
   for chunk in [4096, 8192, 16384, 32768, 65536]:
     chunk_size = chunk

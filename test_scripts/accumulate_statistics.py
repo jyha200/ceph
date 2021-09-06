@@ -7,8 +7,9 @@ import shutil
 import random
 import sys
 import time
+import threading
 
-def get_statistics(log):
+def get_statistics():
   ceph_path = args.ceph
   command = ceph_path + "/ceph osd df"
   subprocess.call(command, shell=True, stdout=log)
@@ -18,21 +19,12 @@ def get_statistics(log):
   command = ceph_path + "/rados " + " df"
   subprocess.call(command, shell=True, stdout=log)
 
+  threading.Timer(5, get_statistics).start()
+
 def process():
+  global log
   log = open(args.log, "w")
-  i = 0;
-  while True:
-    log.write(str(i * args.duration) + " seconds :\n")
-    log.flush()
-    get_statistics(log)
-    if args.runtime > 0:
-      if args.runtime < i * args.duration:
-        break
-    log.flush()
-    log.write("\n")
-    time.sleep(args.duration)
-    i=i+1
-  log.close()
+  get_statistics()
   
 
 def parse_arguments():
@@ -48,5 +40,6 @@ def parse_arguments():
 if __name__ == "__main__":
   parse_arguments()
   process()
+#  log.close()
 
 

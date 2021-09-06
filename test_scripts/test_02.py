@@ -8,10 +8,7 @@ import random
 import sys
 import time
 
-num_files = 1000
-skew_ratio = 20
-dedup_ratio = 50
-chunk_size = 8192
+chunk_size = 16384
 max_iteration = 2
 
 filepath = os.path.dirname(os.path.abspath(__file__))
@@ -63,8 +60,8 @@ def process():
 
   for iteration in range(0,max_iteration):
     print("iteration " + str(iteration) +" " + str(time.time() - start) + "\n")
-    print("wait 30s\n")
-    time.sleep(30)
+    print("wait 120s\n")
+    time.sleep(120)
 
 # execute shallow crawler
     print("execute shallow crawler " + str(time.time() - start) + "\n")
@@ -72,8 +69,8 @@ def process():
     command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 4 --shallow-crawling --sampling-ratio " + str(sample_ratio) + " --osd-count 3 --wakeup-period 10 --iterative --chunk-size " + str(chunk_size) 
     shallow_crawler = subprocess.Popen(command, shell=True, stdout=shallow_log)
 
-    print("wait 30s\n")
-    time.sleep(30)
+    print("wait 120s\n")
+    time.sleep(120)
     shallow_crawler.kill()
     shallow_crawler.wait()
     subprocess.call("sudo pkill -9 dedup-tool", shell=True)
@@ -83,7 +80,7 @@ def process():
 # execute deep crawler
     print("execute deep crawler " + str(time.time() - start) + "\n")
     deep_log = open("test_02_deep.log", "w")
-    command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 16 --osd-count 3 --debug --chunk-size" + str(chunk_size)
+    command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 16 --osd-count 3 --chunk-size" + str(chunk_size)
     subprocess.call(command, shell=True, stdout=deep_log)
     deep_log.close()
     print("execute deep crawler done" + str(time.time() - start) + "\n")

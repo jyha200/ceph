@@ -11,7 +11,7 @@ import time
 num_files = 1000
 skew_ratio = 20
 dedup_ratio = 100
-chunk_size = 8192
+chunk_size = 16384
 filepath = os.path.dirname(os.path.abspath(__file__))
 
 def execute_ceph():
