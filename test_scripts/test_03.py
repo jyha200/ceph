@@ -36,48 +36,45 @@ def process():
   ceph_bin_abs_path = os.path.abspath(args.ceph)
   print ("3. Dedup ratio and metadata according to skew\n")
 
-  for skew in [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]:
-    skew_ratio = skew
-
-# generate test files
-    print("generate test files\n")
-    command = './generate_files.py -n ' + str(num_files) + ' -d ' + str(skew_ratio) + ' -r ' + str(dedup_ratio)
-    subprocess.call(command, shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-
-    print("execute ceph\n")
-    execute_ceph()
-    print("configure ceph\n")
-    configure_ceph()
+  for mode in [0, 1]
+    for skew in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]:
+      print("execute ceph\n")
+      execute_ceph()
+      print("configure ceph\n")
+      configure_ceph()
 
 # background statistics profiling
-    print("execute profiler\n")
-    os.chdir(filepath)
-    profiler_process = subprocess.Popen(\
-        ["./accumulate_statistics.py",\
-        "--ceph", ceph_bin_abs_path,\
-        "--pool", "chunk_pool",\
-        "--log", "test_03_chunk_" + str(chunk_size) + ".log"], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+      print("execute profiler\n")
+      os.chdir(filepath)
+      profiler_process = subprocess.Popen(\
+          ["./accumulate_statistics.py",\
+          "--ceph", ceph_bin_abs_path,\
+          "--pool", "chunk_pool",\
+          "--log", "test_03_skew_" + str(skew) +"_mode_" + str(mode) + ".log"], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
 
-# execute shallow crawler
-    print("execute shallow crawler\n")
-    command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 4 --shallow-crawling --sampling-ratio 10 --osd-count 3 --iterative --chunk-size " + str(chunk_size)
-    shallow_crawler = subprocess.Popen(command, shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-
+# execute crawler
+      print("execute crawler\n")
+      if mode == 0:
+          command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 4 --shallow-crawling --sampling-ratio 10 --osd-count 3 --iterative --chunk-size " + str(chunk_size)
+      else:
+          command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 4 --sampling-ratio 10 --osd-count 3 --iterative --chunk-size " + str(chunk_size)
+      crawler = subprocess.Popen(command, shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
 
 # put objects
-    print("put object\n")
-    src_dir = "test_files_" + str(num_files) + "_" + str(skew_ratio) + "_" + str(dedup_ratio)
-    subprocess.call(\
-        ["./process_object.py",\
-        "--ceph", ceph_bin_abs_path,\
-        "--src", src_dir,
-        "--pool", "base_pool"])
+      num_unique = 10 - skew
+      print("backgroud fio\n")
+      command = "sudo fio --bs-range 4m-4m --runtime 10000 --time_based --do_verify 0 --readwrite randwrite --filename /dev/rbd0 --verify_state_save 0 --group-reporting -- name unique --verify md5 --numjobs " + str(num_unique)
+      for skew_idx in range(skew):
+        command += " --name skew_" + str(skew_idx) + " --verify pattern --verify_pattern " + str(skew_idx)
+      subprocess.Popen(command, shell=True)
+    
+      time.sleep(300)
 
-    time.sleep(30)
-
-    profiler_process.terminate()
-    shallow_crawler.terminate()
-    subprocess.call("sudo pkill -9 ceph", shell=True)
+      profiler_process.terminate()
+      crawler.terminate()
+      crawler.wait()
+      subprocess.call("sudo pkill -9 dedup-tool", shell=True)
+      subprocess.call("sudo pkill -9 ceph", shell=True)
 
 def parse_arguments():
   parser = argparse.ArgumentParser()

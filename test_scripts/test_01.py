@@ -72,7 +72,7 @@ def process():
 # execute shallow crawler
     print("execute shallow crawler " + str(time.time() - start) + "\n")
     shallow_log = open("test_01_shallow.log", "w")
-    command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 4 --shallow-crawling --sampling-ratio 10 --osd-count 3 --wakeup-period 10 --iterative --chunk-size " + str(chunk_size) 
+    command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 4 --shallow-crawling --sampling-ratio 10 --osd-count 3 --wakeup-period 10 --iterative --object-dedup-threshold 40 --chunk-size " + str(chunk_size) 
     shallow_crawler = subprocess.Popen(command, shell=True, stdout=shallow_log)
 
     print("wait 120s\n")
@@ -86,7 +86,7 @@ def process():
 # execute deep crawler
     print("execute deep crawler " + str(time.time() - start) + "\n")
     deep_log = open("test_01_deep.log", "w")
-    command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 16 --sampling-ratio 10 --osd-count 3 --chunk-size" + str(chunk_size)
+    command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 16 --sampling-ratio 10 --object-dedup-threshold 40 --osd-count 3 --chunk-size" + str(chunk_size)
     subprocess.call(command, shell=True, stdout=deep_log)
     deep_log.close()
     print("execute deep crawler done" + str(time.time() - start) + "\n")
