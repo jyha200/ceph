@@ -7453,7 +7453,6 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
             result = -EINVAL;
             goto fail;
           }
-          ceph_assert(force);
 
           result = start_flush(ctx->op, ctx->obc, true, NULL, std::nullopt, force);
           if (result == -EINPROGRESS){
