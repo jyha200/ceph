@@ -524,6 +524,10 @@ public:
     object_dedup_threshold(object_dedup_threshold),
     chunk_size(chunk_size),
     osd_count(osd_count) { }
+  static void clear_fingerprint_store() {
+    std::unique_lock lock(fingerprint_lock);
+    instant_fingerprint_store.clear();
+  }
 
   ~SampleDedup() { };
 
@@ -581,10 +585,12 @@ private:
     size_t duplication_count = 1;
     std::list<chunk_t> found_chunks;
     chunk_t first_chunk;
+//    std::mutex entry_lock;
   };
   std::set<std::string> broadcasted_fp;
   std::set<std::string> oid_for_evict;
-  std::unordered_map<std::string, fp_store_entry_t> instant_fingerprint_store;
+  static std::unordered_map<std::string, fp_store_entry_t> instant_fingerprint_store;
+  static std::shared_mutex fingerprint_lock;
   std::vector<ObjectItem> all_shard_objects;
   std::list<string> dedupable_objects;
   size_t chunk_size = 8192;
@@ -608,6 +614,9 @@ void SampleDedup::broadcast_chunk_info(string& fingerprint, size_t chunk_size){
     broadcasted_fp.insert(fingerprint);
   }
 }
+
+std::unordered_map<std::string, SampleDedup::fp_store_entry_t> SampleDedup::instant_fingerprint_store;
+std::shared_mutex SampleDedup::fingerprint_lock;
 
 void SampleDedup::crawl() {
   try {
@@ -833,6 +842,7 @@ std::string SampleDedup::generate_fingerprint(bufferlist chunk_data) {
 }
 
 bool SampleDedup::check_duplicated(std::string& fingerprint) {
+  std::shared_lock lock(fingerprint_lock);
   auto found_item = instant_fingerprint_store.find(fingerprint);
   if (found_item != instant_fingerprint_store.end()) {
     return true;
@@ -842,11 +852,15 @@ bool SampleDedup::check_duplicated(std::string& fingerprint) {
 }
 
 void SampleDedup::add_duplication(chunk_t& chunk) {
+  std::unique_lock lock(fingerprint_lock);
   auto& target = instant_fingerprint_store[chunk.fingerprint];
-  target.duplication_count++;
-  target.found_chunks.push_back(chunk);
-  if (target.duplication_count > chunk_dedup_threshold) {
-    duplicable_chunks.splice(duplicable_chunks.begin(), target.found_chunks);
+  {
+//    std::unique_lock lock(target.entry_lock);
+    target.duplication_count++;
+    target.found_chunks.push_back(chunk);
+    if (target.duplication_count > chunk_dedup_threshold) {
+      duplicable_chunks.splice(duplicable_chunks.begin(), target.found_chunks);
+    }
   }
 }
 
@@ -854,7 +868,10 @@ void SampleDedup::add_fingerprint(chunk_t& chunk) {
   fp_store_entry_t fp_entry;
   fp_entry.found_chunks.push_back(chunk);
   fp_entry.first_chunk = chunk;
-  instant_fingerprint_store.insert({chunk.fingerprint, fp_entry});
+  {
+    std::unique_lock lock(fingerprint_lock);
+    instant_fingerprint_store.insert({chunk.fingerprint, fp_entry});
+  }
 }
 
 bool SampleDedup::check_object_dedup(size_t dedup_size, size_t total_size) {
@@ -1469,6 +1486,7 @@ int make_crawling_daemon(const map<string, string> &opts,
     }
 
     estimate_threads.clear();
+    SampleDedup::clear_fingerprint_store();
     for (unsigned i = 0; i < max_thread; i++) {
       unique_ptr<CrawlerThread> ptr (
           new SampleDedup(
