@@ -22,6 +22,8 @@ def configure_ceph():
   os.chdir(ceph_bin_abs_path + '/../')
   subprocess.call("sudo bin/ceph osd pool create base_pool 128", shell=True)
   subprocess.call("sudo bin/ceph osd pool create chunk_pool", shell=True)
+  subprocess.call("sudo bin/ceph osd set noscrub", shell=True)
+  subprocess.call("sudo bin/ceph osd set nodeep-scrub", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_tier chunk_pool", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_chunk_algorithm fastcdc", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_cdc_chunk_size " + str(chunk_size), shell=True)
@@ -55,18 +57,19 @@ def process():
 # execute crawler
       print("execute crawler\n")
       if mode == 0:
-          command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 4 --shallow-crawling --sampling-ratio 10 --osd-count 3 --iterative --chunk-size " + str(chunk_size)
+          command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 4 --shallow-crawling --sampling-ratio 10 --osd-count 3 --wakeup-period 10 --iterative --object-dedup-threshold 30 --chunk-size " + str(chunk_size)
       else:
-          command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 4 --sampling-ratio 10 --osd-count 3 --iterative --chunk-size " + str(chunk_size)
+          command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 4 --sampling-ratio 10 --osd-count 3 --wakeup-period 10 --iterative --object-dedup-threshold 30 --chunk-size " + str(chunk_size)
       crawler = subprocess.Popen(command, shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
 
 # put objects
       num_unique = 10 - skew
       print("backgroud fio\n")
-      command = "sudo fio --bs-range 4m-4m --runtime 10000 --time_based --do_verify 0 --readwrite randwrite --filename /dev/rbd0 --verify_state_save 0 --group-reporting -- name unique --verify md5 --numjobs " + str(num_unique)
+      fio_log = open("test_03_fio_mode_"+str(mode)+".log", "w")
+      command = "sudo fio --bs-range 4m-4m --runtime 10000 --time_based --do_verify 0 --direct 1 --readwrite randwrite --filename /dev/rbd0 --verify_state_save 0 --group-reporting -- name unique --verify md5 --numjobs " + str(num_unique)
       for skew_idx in range(skew):
         command += " --name skew_" + str(skew_idx) + " --verify pattern --verify_pattern " + str(skew_idx)
-      subprocess.Popen(command, shell=True)
+      fio_process = subprocess.Popen(command, shell=True, stdout=fio_log)
     
       time.sleep(300)
 
@@ -74,6 +77,7 @@ def process():
       crawler.terminate()
       crawler.wait()
       subprocess.call("sudo pkill -9 dedup-tool", shell=True)
+      subprocess.call("sudo pkill -9 fio", shell=True)
       subprocess.call("sudo pkill -9 ceph", shell=True)
 
 def parse_arguments():

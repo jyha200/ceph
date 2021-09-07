@@ -21,6 +21,8 @@ def configure_ceph():
   os.chdir(ceph_bin_abs_path + '/../')
   subprocess.call("sudo bin/ceph osd pool create base_pool 128", shell=True)
   subprocess.call("sudo bin/ceph osd pool create chunk_pool", shell=True)
+  subprocess.call("sudo bin/ceph osd set noscrub", shell=True)
+  subprocess.call("sudo bin/ceph osd set nodeep-scrub", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_tier chunk_pool", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_chunk_algorithm fastcdc", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_cdc_chunk_size " + str(chunk_size), shell=True)
@@ -54,7 +56,7 @@ def process():
 # put objects
   print("Do fio in background\n")
   fio_log = open("test_02_fio_sample_" + str(sample_ratio) + ".log", "w")
-  fio_process = subprocess.Popen("sudo fio --ioengine rbd --clientname admin --pool base_pool --rbdname test_rbd --invalidate 0 --direct 1 --bsrange 4m-4m --direct 1 --time_based --runtime 100000 --name test --readwrite randrw --status-interval 1 --dedupe_percentage 50",
+  fio_process = subprocess.Popen("sudo fio --ioengine rbd --clientname admin --pool base_pool --rbdname test_rbd --invalidate 0 --direct 1 --bsrange 4m-4m --time_based --runtime 100000 --name test --readwrite randwrite --status-interval 5 --dedupe_percentage 50",
     shell=True, stdout=fio_log)
   start = time.time()
 
@@ -90,7 +92,7 @@ def parse_arguments():
 
 if __name__ == "__main__":
   parse_arguments()
-  for sample_ratio_local in [1, 10, 25, 50, 75, 100]:
+  for sample_ratio_local in [100, 75, 50, 25, 10, 1]:
     global sample_ratio
     sample_ratio = sample_ratio_local
     process()

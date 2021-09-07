@@ -33,6 +33,8 @@ def configure_ceph():
   os.chdir(ceph_bin_abs_path + '/../')
   subprocess.call("sudo bin/ceph osd pool create base_pool 128", shell=True)
   subprocess.call("sudo bin/ceph osd pool create chunk_pool", shell=True)
+  subprocess.call("sudo bin/ceph osd set noscrub", shell=True)
+  subprocess.call("sudo bin/ceph osd set nodeep-scrub", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_tier chunk_pool", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_chunk_algorithm fastcdc", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_cdc_chunk_size " + str(chunk_size), shell=True)
