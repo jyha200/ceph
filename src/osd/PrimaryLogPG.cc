@@ -7490,6 +7490,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
         oi.clear_data_digest();
         ctx->delta_stats.num_wr++;
         ctx->cache_operation = true;
+        ctx->obc->obs.oi.clear_flag(object_info_t::FLAG_DIRTY);
 
 	osd->logger->inc(l_osd_tier_evict);
       }

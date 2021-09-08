@@ -650,6 +650,7 @@ void SampleDedup::crawl() {
     }
     completions.clear();
     for (auto& oid : oid_for_evict) {
+      break;
       ObjectReadOperation op_tier;
       AioCompletion* completion_tier = rados.aio_create_completion();
       op_tier.tier_evict();
