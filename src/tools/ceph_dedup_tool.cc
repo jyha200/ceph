@@ -593,6 +593,7 @@ private:
   static std::shared_mutex fingerprint_lock;
   std::vector<ObjectItem> all_shard_objects;
   std::list<string> dedupable_objects;
+  std::unordered_set<string> flushed_objects;
   size_t chunk_size = 8192;
   int osd_count;
 };
@@ -889,18 +890,23 @@ AioCompletion* SampleDedup::flush(ObjectItem& object) {
   if (debug) {
     cout << "try flush " << object.oid << std::endl;
   }
+  flushed_objects.insert(object.oid);
 
   io_ctx.aio_operate(
       object.oid,
       completion,
       &op,
       NULL);
-  oid_for_evict.insert(object.oid);
+//  oid_for_evict.insert(object.oid);
   return completion;
 }
 
 void SampleDedup::mark_dedup(chunk_t& chunk,
   std::vector<AioCompletion*>& completions) {
+  broadcast_chunk_info(chunk.fingerprint, chunk.size);
+  if (flushed_objects.find(chunk.oid) != flushed_objects.end()) {
+    return;
+  }
   if (debug) {
     cout << "set chunk " << chunk.oid << " fp " << chunk.fingerprint << std::endl;
   }
@@ -934,7 +940,6 @@ void SampleDedup::mark_dedup(chunk_t& chunk,
       NULL);
   completions.push_back(completion);
   oid_for_evict.insert(chunk.oid);
-  broadcast_chunk_info(chunk.fingerprint, chunk.size);
 }
 
 void SampleDedup::mark_non_dedup(ObjectCursor start, ObjectCursor end) {

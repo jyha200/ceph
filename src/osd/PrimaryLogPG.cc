@@ -7454,6 +7454,8 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
             goto fail;
           }
 
+          ctx->obc->obs.oi.set_flag(object_info_t::FLAG_MANIFEST);
+          ctx->obc->obs.oi.manifest.type = object_manifest_t::TYPE_CHUNKED;
           result = start_flush(ctx->op, ctx->obc, true, NULL, std::nullopt, force);
           if (result == -EINPROGRESS){
             result = -EAGAIN;
@@ -10766,10 +10768,6 @@ int PrimaryLogPG::finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_
       osd->reply_op_error(mop->op, -EINVAL);
     return -EINVAL;
   }
-  if (obc->is_blocked()){
-    obc->stop_block();
-  }
-  kick_object_context_blocked(obc);
 
   if (mop->results[0] < 0) {
     // check if the previous op returns fail
@@ -10872,6 +10870,11 @@ int PrimaryLogPG::finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_
   }
 
   manifest_ops.erase(oid);
+
+if (obc->is_blocked()){
+    obc->stop_block();
+  }
+  kick_object_context_blocked(obc);
 
   return 0;
 }
@@ -11009,6 +11012,7 @@ int PrimaryLogPG::start_flush(
     osd->objecter->op_cancel(tids, -ECANCELED);
   }
 
+  dout(20) << __func__ << " " << soid << " " << dedup << " " << obc->obs.oi.has_manifest() << " " << obc->obs.oi.manifest.is_chunked()<<dendl;
   if (dedup || (obc->obs.oi.has_manifest() && obc->obs.oi.manifest.is_chunked())) {
     int r = start_dedup(op, obc, std::move(on_flush), dedup);
     if (r != -EINPROGRESS) {
@@ -15243,6 +15247,7 @@ bool PrimaryLogPG::dedup_flush(ObjectContextRef obc) {
     osd->logger->inc(l_osd_agent_skip);
     return false;
   }
+    dout(20) << __func__ << " dirty " << obc->obs.oi << dendl;
   if (obc->obs.oi.is_cache_pinned()) {
     dout(20) << __func__ << " skip (cache_pinned) " << obc->obs.oi << dendl;
     osd->logger->inc(l_osd_agent_skip);
