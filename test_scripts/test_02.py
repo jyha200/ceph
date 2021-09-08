@@ -61,25 +61,28 @@ def process():
     shell=True, stdout=fio_log)
   start = time.time()
 
-  print("wait 120s\n")
-  time.sleep(120)
-
 # execute shallow crawler
   print("execute shallow crawler " + str(time.time() - start) + "\n")
   shallow_log = open("test_02_shallow.log", "w")
-  command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 4 --shallow-crawling --sampling-ratio " + str(sample_ratio) + " --osd-count 3 --wakeup-period 10 --object-dedup-threshold 20 --iterative --chunk-size " + str(chunk_size)
+  command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --iterative --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 12 --shallow-crawling --sampling-ratio " + str(sample_ratio) + " --osd-count 3 --wakeup-period 10 --object-dedup-threshold 40 --chunk-size " + str(chunk_size)
   shallow_crawler = subprocess.Popen(command, shell=True, stdout=shallow_log)
-  print("wait 240s\n")
-  time.sleep(240)
-  subprocess.call("sudo pkill -9 dedup-tool", shell=True)
-  shallow_log.close()
-  print("execute shallow crawler done " + str(time.time() - start) + "\n")
-
-  profiler_process.terminate()
+  print("wait 30s\n")
+  time.sleep(30)
   fio_process.terminate()
   fio_process.wait()
   subprocess.call("sudo pkill -9 fio", shell=True)
   fio_log.close()
+
+  print("quit fio\n")
+
+  print("wait 240s\n")
+  time.sleep(240)
+
+  subprocess.call("sudo pkill -9 dedup-tool", shell=True)
+  shallow_log.close()
+  profiler_process.terminate()
+  print("execute shallow crawler done " + str(time.time() - start) + "\n")
+
 
 def parse_arguments():
   parser = argparse.ArgumentParser()
@@ -91,6 +94,7 @@ def parse_arguments():
 if __name__ == "__main__":
   parse_arguments()
   for sample_ratio_local in [100, 75, 50, 25, 10, 1]:
+#  for sample_ratio_local in [100]:
     global sample_ratio
     sample_ratio = sample_ratio_local
     process()

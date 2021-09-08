@@ -585,15 +585,17 @@ private:
     size_t duplication_count = 1;
     std::list<chunk_t> found_chunks;
     chunk_t first_chunk;
+    bool processed = false;
 //    std::mutex entry_lock;
   };
   std::set<std::string> broadcasted_fp;
   std::set<std::string> oid_for_evict;
   static std::unordered_map<std::string, fp_store_entry_t> instant_fingerprint_store;
   static std::shared_mutex fingerprint_lock;
+  static std::unordered_set<std::string> flushed_objects;
+  static std::shared_mutex flushed_lock;
   std::vector<ObjectItem> all_shard_objects;
   std::list<string> dedupable_objects;
-  std::unordered_set<string> flushed_objects;
   size_t chunk_size = 8192;
   int osd_count;
 };
@@ -618,6 +620,8 @@ void SampleDedup::broadcast_chunk_info(string& fingerprint, size_t chunk_size){
 
 std::unordered_map<std::string, SampleDedup::fp_store_entry_t> SampleDedup::instant_fingerprint_store;
 std::shared_mutex SampleDedup::fingerprint_lock;
+std::unordered_set<std::string> SampleDedup::flushed_objects;
+std::shared_mutex SampleDedup::flushed_lock;
 
 void SampleDedup::crawl() {
   try {
@@ -650,9 +654,12 @@ void SampleDedup::crawl() {
     }
     completions.clear();
     for (auto& oid : oid_for_evict) {
-      break;
+//      break;
       ObjectReadOperation op_tier;
       AioCompletion* completion_tier = rados.aio_create_completion();
+      if (debug) {
+        cout << "evict " << oid << std::endl;
+      }
       op_tier.tier_evict();
       io_ctx.aio_operate(
           oid,
@@ -856,12 +863,31 @@ bool SampleDedup::check_duplicated(std::string& fingerprint) {
 void SampleDedup::add_duplication(chunk_t& chunk) {
   std::unique_lock lock(fingerprint_lock);
   auto& target = instant_fingerprint_store[chunk.fingerprint];
+  bool duplicated = false;
+  chunk_t first_chunk;
+  bool do_first_chunk = false;
+
   {
 //    std::unique_lock lock(target.entry_lock);
     target.duplication_count++;
     target.found_chunks.push_back(chunk);
-    if (target.duplication_count > chunk_dedup_threshold) {
-      duplicable_chunks.splice(duplicable_chunks.begin(), target.found_chunks);
+    if (target.duplication_count >= chunk_dedup_threshold) {
+      duplicated = true;
+      if (target.processed == false) {
+        first_chunk = target.first_chunk;
+        target.processed = true;
+        do_first_chunk = true;
+      }
+//      duplicable_chunks.splice(duplicable_chunks.begin(), target.found_chunks);
+    }
+  }
+  if (duplicated) {
+    duplicable_chunks.push_back(chunk);
+    if (do_first_chunk) {
+      if (debug) {
+        cout << "do first chunk " << first_chunk.oid << std::endl;
+      }
+      duplicable_chunks.push_back(first_chunk);
     }
   }
 }
@@ -878,7 +904,7 @@ void SampleDedup::add_fingerprint(chunk_t& chunk) {
 
 bool SampleDedup::check_object_dedup(size_t dedup_size, size_t total_size) {
   if (total_size > 0) {
-    double dedup_ratio = dedup_size / total_size * 100;
+    double dedup_ratio = dedup_size *100 / total_size;
     return dedup_ratio >= object_dedup_threshold;
   }
   return false;
@@ -889,9 +915,12 @@ AioCompletion* SampleDedup::flush(ObjectItem& object) {
   AioCompletion* completion = rados.aio_create_completion();
   op.tier_flush();
   if (debug) {
-    cout << "try flush " << object.oid << std::endl;
+    cout << "try flush " << object.oid << " " << &flushed_objects<<std::endl;
   }
-  flushed_objects.insert(object.oid);
+  {
+    std::unique_lock lock(flushed_lock);
+    flushed_objects.insert(object.oid);
+  }
 
   io_ctx.aio_operate(
       object.oid,
@@ -905,11 +934,14 @@ AioCompletion* SampleDedup::flush(ObjectItem& object) {
 void SampleDedup::mark_dedup(chunk_t& chunk,
   std::vector<AioCompletion*>& completions) {
   broadcast_chunk_info(chunk.fingerprint, chunk.size);
-  if (flushed_objects.find(chunk.oid) != flushed_objects.end()) {
-    return;
+  {
+    std::shared_lock lock(flushed_lock);
+    if (flushed_objects.find(chunk.oid) != flushed_objects.end()) {
+      return;
+    }
   }
   if (debug) {
-    cout << "set chunk " << chunk.oid << " fp " << chunk.fingerprint << std::endl;
+    cout << "set chunk " << chunk.oid << " fp " << chunk.fingerprint << " " << &flushed_objects << std::endl;
   }
 
   uint64_t size;

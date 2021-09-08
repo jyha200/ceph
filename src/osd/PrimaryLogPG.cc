@@ -7490,7 +7490,8 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
         oi.clear_data_digest();
         ctx->delta_stats.num_wr++;
         ctx->cache_operation = true;
-        ctx->obc->obs.oi.clear_flag(object_info_t::FLAG_DIRTY);
+        ctx->undirty = true;
+        //oi.clear_flag(object_info_t::FLAG_DIRTY);
 
 	osd->logger->inc(l_osd_tier_evict);
       }
@@ -10840,9 +10841,6 @@ int PrimaryLogPG::finish_set_dedup(hobject_t oid, int r, ceph_tid_t tid, uint64_
     PGTransaction* t = ctx->op_t.get();
     // The chunks already has a reference, so it is just enough to invoke truncate if necessary
     for (auto &p : ctx->new_obs.oi.manifest.chunk_map) {
-      if (p.second.is_missing()) {
-        continue;
-      }
       p.second.set_flag(chunk_info_t::FLAG_MISSING);
       // punch hole
       total_bytes += p.second.length;
