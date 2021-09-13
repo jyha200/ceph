@@ -525,8 +525,14 @@ public:
     chunk_size(chunk_size),
     osd_count(osd_count) { }
   static void clear_fingerprint_store() {
-    std::unique_lock lock(fingerprint_lock);
-    instant_fingerprint_store.clear();
+    {
+      std::unique_lock lock(fingerprint_lock);
+      instant_fingerprint_store.clear();
+    }
+    {
+      std::unique_lock lock(flushed_lock);
+      flushed_objects.clear();
+    }
   }
 
   ~SampleDedup() { };
@@ -629,6 +635,7 @@ void SampleDedup::crawl() {
     ObjectCursor shard_start;
     ObjectCursor shard_end;
     std::tie(shard_start, shard_end) = get_shard_boundary();
+    cout << "new iteration " << n <<std::endl;
 
     vector<AioCompletion*> completions;
     for (ObjectCursor current_object = shard_start; current_object < shard_end; ) {
@@ -654,7 +661,7 @@ void SampleDedup::crawl() {
     }
     completions.clear();
     for (auto& oid : oid_for_evict) {
-//      break;
+      //break;
       ObjectReadOperation op_tier;
       AioCompletion* completion_tier = rados.aio_create_completion();
       if (debug) {
@@ -671,6 +678,7 @@ void SampleDedup::crawl() {
     for (auto& completion : completions) {
       completion->wait_for_complete();
     }
+    cout << "done iteration " << n <<std::endl;
   }
   catch (std::exception& e) {
   }
@@ -802,7 +810,10 @@ void SampleDedup::try_dedup_and_accumulate_result(ObjectItem& object,
     if (debug) {
       cout << "dedup object " << object.oid << std::endl;
     }
-    completions.push_back(flush(object));
+    auto completion = flush(object);
+    if (completion) {
+      completions.push_back(completion);
+    }
   }
 
   total_duplicated_size += duplicated_size;
