@@ -15285,6 +15285,63 @@ bool PrimaryLogPG::dedup_flush(ObjectContextRef obc) {
     return false;
   }
 
+  // eviction condition
+  dout(20) << __func__ << " start "<< obc->obs.oi << dendl;
+  const hobject_t& soid = obc->obs.oi.soid;
+  if (obc->obs.oi.is_dirty()) {
+    dout(20) << __func__ << " skip (dirty) " << obc->obs.oi << dendl;
+    return false;
+  }
+  if (!obc->obs.oi.watchers.empty()) {
+    dout(20) << __func__ << " skip (watchers) " << obc->obs.oi << dendl;
+    return false;
+  }
+
+  if (cache_state->evict_mode != TierAgentState::EVICT_MODE_FULL) {
+    // is this object old than cache_min_evict_age?
+    utime_t now = ceph_clock_now();
+    utime_t ob_local_mtime;
+    if (obc->obs.oi.local_mtime != utime_t()) {
+      ob_local_mtime = obc->obs.oi.local_mtime;
+    } else {
+      ob_local_mtime = obc->obs.oi.mtime;
+    }
+    if (ob_local_mtime + utime_t(pool.info.cache_min_evict_age, 0) > now) {
+      dout(20) << __func__ << " skip (too young) " << obc->obs.oi << dendl;
+      osd->logger->inc(l_osd_agent_skip);
+      return false;
+    }
+    // is this object old and/or cold enough?
+    int temp = 0;
+    uint64_t temp_upper = 0, temp_lower = 0;
+    if (cache_hit_set)
+    {
+      //agent_estimate_temp(soid, &temp);
+      temp = 0;
+      if (cache_hit_set->contains(soid)) {
+        temp = 1000000;
+      }
+      unsigned i = 0;
+      int last_n = pool.info.hit_set_search_last_n;
+      for (map<time_t,HitSetRef>::reverse_iterator p =
+          cache_state->hit_set_map.rbegin(); last_n > 0 &&
+          p != cache_state->hit_set_map.rend(); ++p, ++i) {
+        if (p->second->contains(soid)) {
+          temp += pool.info.get_grade(i);
+          --last_n;
+        }
+      }
+    }
+    cache_state->temp_hist.add(temp);
+    cache_state->temp_hist.get_position_micro(temp, &temp_lower, &temp_upper);
+    dout(20) << __func__ << " temp lower " << temp_lower << " temp upper " << temp_upper
+      << __func__ << " evict_effort " << cache_state->evict_effort << dendl;
+
+    if (1000000 - temp_upper >= cache_state->evict_effort) {
+      dout(20) << __func__ << " still hot " << obc->obs.oi << dendl;
+      return false;
+    }
+  }
   dout(20) << __func__ << " flushing " << obc->obs.oi << dendl;
 
   // FIXME: flush anything dirty, regardless of what distribution of
@@ -15564,7 +15621,7 @@ bool PrimaryLogPG::agent_maybe_flush(ObjectContextRef& obc)
     return false;
   }
 
-  dout(10) << __func__ << " flushing " << obc->obs.oi << dendl;
+  dout(20) << __func__ << " flushing " << obc->obs.oi << dendl;
 
   // FIXME: flush anything dirty, regardless of what distribution of
   // ages we expect.
