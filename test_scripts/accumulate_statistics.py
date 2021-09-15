@@ -9,22 +9,35 @@ import sys
 import time
 import threading
 
+osd_count = 3
+
 def get_statistics():
+  start = time.time()
   ceph_path = args.ceph
+  subprocess.call("date",shell=True, stdout=log)
+  for osd in range(osd_count):
+    command = ceph_path + "/ceph tell osd." + str(osd) +" compact"
+    subprocess.call(command, shell=True)
   command = ceph_path + "/ceph osd df"
   subprocess.call(command, shell=True, stdout=log)
   log.flush()
   log.write('\n')
   log.flush()
+
   command = ceph_path + "/rados " + " df"
   subprocess.call(command, shell=True, stdout=log)
-
-  threading.Timer(5, get_statistics).start()
+  end = time.time()
+  elapsed = end - start
+  sleep_time = args.duration - elapsed
+  if sleep_time > 0:
+    time.sleep(sleep_time)
+#  threading.Timer(5, get_statistics).start()
 
 def process():
   global log
   log = open(args.log, "w")
-  get_statistics()
+  while True:
+    get_statistics()
   
 
 def parse_arguments():

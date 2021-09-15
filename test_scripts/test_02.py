@@ -28,9 +28,11 @@ def configure_ceph():
   subprocess.call("sudo bin/ceph osd pool set base_pool dedup_cdc_chunk_size " + str(chunk_size), shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool fingerprint_algorithm sha1", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool target_max_objects 10000", shell=True)
-  subprocess.call("sudo bin/ceph osd pool set base_pool target_max_bytes 104857600", shell=True)
+  subprocess.call("sudo bin/ceph osd pool set base_pool target_max_bytes 10485760000", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool pg_autoscale_mode off", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool cache_target_full_ratio .9", shell=True)
+  subprocess.call("sudo bin/ceph osd pool set base_pool cache_min_flush_age 40", shell=True)
+  subprocess.call("sudo bin/ceph osd pool set base_pool cache_min_evict_age 40", shell=True)
   subprocess.call("sudo bin/rbd create test_rbd --size 100G --pool base_pool", shell=True)
 #  subprocess.call("sudo bin/rbd map --pool base_pool test_rbd", shell=True)
 
@@ -51,32 +53,52 @@ def process():
     ["./accumulate_statistics.py",\
     "--ceph", ceph_bin_abs_path,\
     "--pool", "chunk_pool",\
-    "--log", "test_02_sample_" + str(sample_ratio) + ".log"], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+    "--log", "test_02_sample_" + str(sample_ratio) + "_mode_" + str(mode) + ".log"], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+  if mode == 0:
+    print("seq fill")      
+    subprocess.call(["sudo", "fio",\
+        "--ioengine", "rbd",\
+        "--clientname", "admin",\
+        "--pool", "base_pool",\
+        "--rbdname", "test_rbd",\
+        "--invalidate", "0",\
+        "--direct", "1",\
+        "--bsrange", "4m-4m",\
+        "--name", "test",\
+        "--readwrite", "write",\
+        "--iodepth", "16",\
+        "--size", "100%",\
+        "--dedupe_percentage", "50"])
+    print("seq fill done")      
 
 # put objects
   print("Do fio in background\n")
-  fio_log = open("test_02_fio_sample_" + str(sample_ratio) + ".log", "w")
-  fio_process = subprocess.Popen("sudo fio --ioengine rbd --clientname admin --pool base_pool --rbdname test_rbd --invalidate 0 --direct 1 --bsrange 4m-4m --time_based --runtime 100000 --name test --readwrite randwrite --status-interval 5 --dedupe_percentage 50",
-#fio_process = subprocess.Popen("sudo fio --ioengine rbd --clientname admin --pool base_pool --rbdname test_rbd --invalidate 0 --direct 1 --bsrange 4m-4m --time_based --runtime 100000 --name test --readwrite randwrite --status-interval 5 --verify pattern --verify_pattern 0xabcd",
-    shell=True, stdout=fio_log)
+  fio_log = open("test_02_fio_sample_" + str(sample_ratio) + "_mode_" + str(mode) + ".log", "w")
+  if mode == 0:
+    fio_process = subprocess.Popen("sudo fio --ioengine rbd --clientname admin --pool base_pool --rbdname test_rbd --invalidate 0 --direct 1 --bsrange 4m-4m --time_based --runtime 10000 --name test --readwrite randwrite --status-interval 1 --dedupe_percentage 50 --iodepth 16",
+        shell=True, stdout=fio_log)
+  else:
+    fio_process = subprocess.Popen("sudo fio --ioengine rbd --clientname admin --pool base_pool --rbdname test_rbd --invalidate 0 --direct 1 --bsrange 4m-4m --time_based --runtime 30 --name test --readwrite randwrite --status-interval 1 --dedupe_percentage 50",
+        shell=True, stdout=fio_log)
   start = time.time()
 
 # execute shallow crawler
   print("execute shallow crawler " + str(time.time() - start) + "\n")
   shallow_log = open("test_02_shallow.log", "w")
+#  command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 12 --shallow-crawling --sampling-ratio " + str(sample_ratio) + " --osd-count 3 --wakeup-period 10 --object-dedup-threshold 40 --chunk-size " + str(chunk_size)
   command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --iterative --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 12 --shallow-crawling --sampling-ratio " + str(sample_ratio) + " --osd-count 3 --wakeup-period 10 --object-dedup-threshold 40 --chunk-size " + str(chunk_size)
   shallow_crawler = subprocess.Popen(command, shell=True, stdout=shallow_log)
-  print("wait 30s\n")
-  time.sleep(30)
-  fio_process.terminate()
-  fio_process.wait()
-  subprocess.call("sudo pkill -9 fio", shell=True)
-  fio_log.close()
+  if mode == 0:
+    time.sleep(1000)
+  else:
+    print("wait 30s\n")
+    time.sleep(30)
+    fio_log.close()
 
-  print("quit fio\n")
+    print("quit fio\n")
 
-  print("wait 240s\n")
-  time.sleep(240)
+    print("wait 600s\n")
+    time.sleep(1000)
 
   subprocess.call("sudo pkill -9 dedup-tool", shell=True)
   shallow_log.close()
@@ -92,10 +114,14 @@ def parse_arguments():
   args = parser.parse_args()
 
 if __name__ == "__main__":
-  parse_arguments()
-  for sample_ratio_local in [100, 75, 50, 25, 10, 1]:
-#  for sample_ratio_local in [100]:
-    global sample_ratio
-    sample_ratio = sample_ratio_local
-    process()
+    parse_arguments()
+    global dedup_ratio
+    for sample_ratio_local in [100, 75, 50, 25, 10, 1]:
+        global sample_ratio
+        sample_ratio = sample_ratio_local
+        global mode
+        mode = 0
+        process()
+        #mode = 1
+        #process()
 

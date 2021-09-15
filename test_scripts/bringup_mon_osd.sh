@@ -77,7 +77,7 @@ bringup_osd_remote() {
   execute_remote_cmd "${cmd}" $1 $2
   cmd="chown -R ceph:ceph /var/lib/ceph/osd/ceph-$ID"
   execute_remote_cmd "${cmd}" $1 $2
-  cmd="$3/build/bin/ceph-osd -i $ID"
+  cmd="$3/build/bin/ceph-osd -i $ID --debug-osd 1"
   execute_remote_cmd "${cmd}" $1 $2
   echo "brinup_osd_remote done"
 }
