@@ -15267,7 +15267,8 @@ bool PrimaryLogPG::dedup_flush(ObjectContextRef obc) {
   dout(20) << __func__ << " evictmode " << evict_mode_full <<
     " ob local mtime " << ob_local_mtime << " flush age " <<
      utime_t(pool.info.cache_min_flush_age,0) << " now " << now << dendl;
-  if (!evict_mode_full &&
+//  if (!evict_mode_full &&
+    if(
       obc->obs.oi.soid.snap == CEPH_NOSNAP &&  // snaps immutable; don't delay
       (ob_local_mtime + utime_t(pool.info.cache_min_flush_age, 0) > now)) {
     dout(20) << __func__ << " skip (too young) " << obc->obs.oi << dendl;
