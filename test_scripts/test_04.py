@@ -39,7 +39,7 @@ def process():
   print ("4. Dedup ratio and metadata according to chunk size\n")
   global chunk_size
 
-  for chunk in [4096, 32768, 65536, 8192, 16384]:
+  for chunk in [32768, 65536, 8192, 16384]:
 #  for chunk in [16384]:
     chunk_size = chunk
 
@@ -60,22 +60,23 @@ def process():
 
     print("Do fio in background\n")
     fio_log = open("test_04_fio_chunk_"+str(chunk_size) + ".log", "w")
-    fio_process = subprocess.Popen("sudo fio --ioengine rbd --clientname admin " +\
+    fio_process = subprocess.call("sudo fio --iodepth 128 --ioengine rbd --clientname admin " +\
       "--pool base_pool --rbdname test_rbd --invalidate 0 --direct 1 --bsrange 4m-4m " +\
-      "--time_based --runtime 30 --name test --readwrite randwrite --status-interval 1 " +\
+      "--size 4G --name test --readwrite randwrite --status-interval 1 " +\
       "--dedupe_percentage 50",
       shell=True, stdout=fio_log)
 
 # execute shallow crawler
     print("execute shallow crawler\n")
+    shallow_log = open("test_04_shallow_chunk_"+str(chunk_size) +".log","w")
     command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --iterative " +\
       "--op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 12 " +\
       "--shallow-crawling --sampling-ratio 100 --osd-count 3 --wakeup-period 10 " +\
       "--object-dedup-threshold 40 --chunk-size " + str(chunk_size)
-    shallow_crawler = subprocess.Popen(command, shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+    shallow_crawler = subprocess.Popen(command, shell=True, stderr=subprocess.DEVNULL, stdout=shallow_log)
 
-    print("wait 600s\n")
-    time.sleep(600)
+    print("wait 300s\n")
+    time.sleep(300)
 
     subprocess.call("sudo pkill -9 dedup-tool", shell=True)
     profiler_process.terminate()
