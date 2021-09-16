@@ -14995,6 +14995,7 @@ void PrimaryLogPG::cache_hit_set_create() {
 
 bool PrimaryLogPG::dedup_cache_work()
 {
+ // return false;
   if (0 >= pool.info.get_dedup_tier()) {
     dout(20) << __func__ << "no dedup tier" << dendl;
     return false;
@@ -15288,11 +15289,7 @@ bool PrimaryLogPG::dedup_flush(ObjectContextRef obc) {
   // eviction condition
   dout(20) << __func__ << " start "<< obc->obs.oi << dendl;
   const hobject_t& soid = obc->obs.oi.soid;
-  if (obc->obs.oi.is_dirty()) {
-    dout(20) << __func__ << " skip (dirty) " << obc->obs.oi << dendl;
-    return false;
-  }
-  if (!obc->obs.oi.watchers.empty()) {
+    if (!obc->obs.oi.watchers.empty()) {
     dout(20) << __func__ << " skip (watchers) " << obc->obs.oi << dendl;
     return false;
   }
