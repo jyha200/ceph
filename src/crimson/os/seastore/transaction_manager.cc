@@ -298,7 +298,8 @@ TransactionManager::get_next_dirty_extents(
 TransactionManager::rewrite_extent_ret
 TransactionManager::rewrite_logical_extent(
   Transaction& t,
-  LogicalCachedExtentRef extent)
+  LogicalCachedExtentRef extent,
+  bool ool)
 {
   LOG_PREFIX(TransactionManager::rewrite_logical_extent);
   if (extent->has_been_invalidated()) {
@@ -319,6 +320,7 @@ TransactionManager::rewrite_logical_extent(
     nlextent->get_bptr().c_str());
   nlextent->set_laddr(lextent->get_laddr());
   nlextent->set_pin(lextent->get_pin().duplicate());
+  nlextent->ool = ool;
 
   DEBUGT(
     "rewriting {} into {}",
@@ -339,7 +341,8 @@ TransactionManager::rewrite_logical_extent(
 
 TransactionManager::rewrite_extent_ret TransactionManager::rewrite_extent(
   Transaction &t,
-  CachedExtentRef extent)
+  CachedExtentRef extent,
+  bool ool)
 {
   LOG_PREFIX(TransactionManager::rewrite_extent);
   {
@@ -358,9 +361,9 @@ TransactionManager::rewrite_extent_ret TransactionManager::rewrite_extent(
   }
 
   if (extent->is_logical()) {
-    return rewrite_logical_extent(t, extent->cast<LogicalCachedExtent>());
+    return rewrite_logical_extent(t, extent->cast<LogicalCachedExtent>(), ool);
   } else {
-    return lba_manager->rewrite_extent(t, extent);
+    return lba_manager->rewrite_extent(t, extent, ool);
   }
 }
 

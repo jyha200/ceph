@@ -332,7 +332,8 @@ BtreeLBAManager::scan_mapped_space_ret BtreeLBAManager::scan_mapped_space(
 
 BtreeLBAManager::rewrite_extent_ret BtreeLBAManager::rewrite_extent(
   Transaction &t,
-  CachedExtentRef extent)
+  CachedExtentRef extent,
+  bool ool)
 {
   LOG_PREFIX(BtreeLBAManager::rewrite_extent);
   if (extent->has_been_invalidated()) {
@@ -340,6 +341,8 @@ BtreeLBAManager::rewrite_extent_ret BtreeLBAManager::rewrite_extent(
   }
   assert(!extent->has_been_invalidated());
   assert(!extent->is_logical());
+
+  extent->ool = ool;
 
   logger().debug(
     "{}: rewriting {}", 

@@ -239,8 +239,19 @@ public:
   bool equals(const SpaceTrackerI &other) const;
 };
 
+class SpaceCleaner : public SegmentProvider {
+  virtual void mount(size_t block_size, size_t segment_size, size_t num_segments) = 0;
+  virtual void init_mkfs(journal_seq_t head) = 0;
+  virtual init_segments_ret init_segments() = 0;
+  virtual void complete_init() = 0;
+  virtual void stop() = 0;
+  virtual set_extent_callback(ExtentCallbackInterface *cb) = 0;
 
-class SegmentCleaner : public SegmentProvider {
+  virtual void set_journal_head(journal_seq_t head) = 0;
+  virtual void update_journal_tail_target(journal_seq_t target) = 0;
+};
+
+class SegmentCleaner : public SpaceCleaner {
 public:
   /// Config
   struct config_t {
@@ -329,7 +340,8 @@ public:
     using rewrite_extent_ret = rewrite_extent_iertr::future<>;
     virtual rewrite_extent_ret rewrite_extent(
       Transaction &t,
-      CachedExtentRef extent) = 0;
+      CachedExtentRef extent,
+      bool ool = false) = 0;
 
     /**
      * get_extent_if_live

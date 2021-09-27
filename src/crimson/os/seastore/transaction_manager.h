@@ -368,7 +368,8 @@ public:
   using SegmentCleaner::ExtentCallbackInterface::rewrite_extent_ret;
   rewrite_extent_ret rewrite_extent(
     Transaction &t,
-    CachedExtentRef extent) final;
+    CachedExtentRef extent,
+    bool ool = false) final;
 
   using SegmentCleaner::ExtentCallbackInterface::get_extent_if_live_ret;
   get_extent_if_live_ret get_extent_if_live(
@@ -522,7 +523,8 @@ private:
 
   rewrite_extent_ret rewrite_logical_extent(
     Transaction& t,
-    LogicalCachedExtentRef extent);
+    LogicalCachedExtentRef extent,
+    bool ool = false);
 public:
   // Testing interfaces
   auto get_segment_cleaner() {
