@@ -33,11 +33,14 @@ open_ertr::future<> PosixNVMeDevice::open(
         return identify_controller().safe_then([this, in_path, mode](
           auto id_controller_data) {
           support_multistream = id_controller_data.oacs.support_directives;
+          // AWUPF is 0's based value
+          awupf = id_controller_data.awupf + 1;
           return identify_namespace().safe_then([this, in_path, mode] (
             auto id_namespace_data) {
             // LBA format provides LBA size which is power of 2. LBA is the
             // minimum size of read and write.
             block_size = (1 << id_namespace_data.lbaf0.lbads);
+            atomic_write_unit = awupf * block_size;
             data_protection_type = id_namespace_data.dps.protection_type;
             data_protection_enabled = (data_protection_type > 0);
             if (id_namespace_data.nsfeat.opterf == 1){
