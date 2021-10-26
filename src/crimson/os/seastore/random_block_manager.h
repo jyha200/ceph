@@ -56,7 +56,10 @@ public:
     crimson::ct_error::enospc,
     crimson::ct_error::erange
     >;
-  virtual write_ertr::future<> write(uint64_t addr, bufferptr &buf) = 0;
+  virtual write_ertr::future<> write(
+    uint64_t addr,
+    bufferptr &buf,
+    uint16_t stream = 0) = 0;
 
   using open_ertr = crimson::errorator<
     crimson::ct_error::input_output_error,

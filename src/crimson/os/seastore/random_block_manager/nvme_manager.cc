@@ -525,7 +525,8 @@ NVMeManager::open_ertr::future<> NVMeManager::open(
 
 NVMeManager::write_ertr::future<> NVMeManager::write(
   blk_paddr_t addr,
-  bufferptr &bptr)
+  bufferptr &bptr,
+  uint16_t stream)
 {
   ceph_assert(device);
   if (addr > super.end || addr < super.start ||
@@ -534,7 +535,8 @@ NVMeManager::write_ertr::future<> NVMeManager::write(
   }
   return device->write(
     addr,
-    bptr);
+    bptr,
+    stream);
 }
 
 NVMeManager::read_ertr::future<> NVMeManager::read(
@@ -699,7 +701,8 @@ NVMeManager::write_ertr::future<> NVMeManager::write(
   }
   return device->write(
       addr,
-      bptr);
+      bptr,
+      (uint16_t)StreamID::RBM_META);
 }
 
 std::ostream &operator<<(std::ostream &out, const rbm_metadata_header_t &header)
