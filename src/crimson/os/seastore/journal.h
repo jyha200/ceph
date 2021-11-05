@@ -492,7 +492,11 @@ class TempCBJournal {
     auto bptr = bufferptr(ceph::buffer::create_page_aligned(to_write.length()));
     auto iter = to_write.cbegin();
     iter.copy(to_write.length(), bptr.c_str());
-    return device->write(addr + get_start_addr(), bptr
+    // Separate journal log data to single stream
+    return device->write(
+      addr + get_start_addr(),
+      bptr,
+      static_cast<uint16_t>(NVMeDevice::StreamID::JOURNAL_LOG)
         ).handle_error(
           write_ertr::pass_further{},
           crimson::ct_error::assert_all{ "Invalid error device->write" }
@@ -511,7 +515,10 @@ class TempCBJournal {
                 ceph::buffer::create_page_aligned(next_write.length()));
             auto iter = next_write.cbegin();
             iter.copy(next_write.length(), bp.c_str());
-            return device->write(next, bp
+            // Separate journal log data to single stream
+            return device->write(next,
+              bp,
+              static_cast<uint16_t>(NVMeDevice::StreamID::JOURNAL_LOG)
                 ).handle_error(
                   write_ertr::pass_further{},
                   crimson::ct_error::assert_all{ "Invalid error device->write" }
@@ -535,7 +542,12 @@ class TempCBJournal {
     auto bptr = bufferptr(ceph::buffer::create_page_aligned(write_length));
     auto iter = bl.cbegin();
     iter.copy(bl.length(), bptr.c_str());
-    return device->write(offset, bptr
+    // Separate journal internal metadata write from journal log data
+    // Its amount might be too small to dedicate a single stream for it
+    return device->write(
+      offset,
+      bptr,
+      static_cast<uint16_t>(NVMeDevice::StreamID::NOT_ASSIGNED)
         ).handle_error(
           write_ertr::pass_further{},
           crimson::ct_error::assert_all{ "Invalid error device->write" }

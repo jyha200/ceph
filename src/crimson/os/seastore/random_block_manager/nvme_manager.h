@@ -190,7 +190,7 @@ public:
   write_ertr::future<> write(
     uint64_t addr,
     bufferptr &buf,
-    uint16_t stream = 0) final;
+    StreamID stream = StreamID::NOT_ASSIGNED) final;
   open_ertr::future<> open(const std::string &path, paddr_t start) final;
   close_ertr::future<> close() final;
 

@@ -49,6 +49,18 @@ public:
     crimson::ct_error::erange>;
   virtual read_ertr::future<> read(uint64_t addr, bufferptr &buffer) = 0;
 
+  // RandomBlockManager does not export every stream IDs to upper layer
+  // Some stream IDs such as JOURNAL_LOG for CBJournal are not available
+  // on RBM Layer.
+  enum class StreamID {
+    NOT_ASSIGNED = 0,
+    RBM_1 = 1,
+    RBM_2 = 2,
+    RBM_3 = 3,
+    RBM_4 = 4,
+    MAX = 4,
+  };
+
   using write_ertr = crimson::errorator<
     crimson::ct_error::input_output_error,
     crimson::ct_error::invarg,
@@ -59,7 +71,7 @@ public:
   virtual write_ertr::future<> write(
     uint64_t addr,
     bufferptr &buf,
-    uint16_t stream = 0) = 0;
+    StreamID stream = StreamID::NOT_ASSIGNED) = 0;
 
   using open_ertr = crimson::errorator<
     crimson::ct_error::input_output_error,

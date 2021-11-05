@@ -526,17 +526,20 @@ NVMeManager::open_ertr::future<> NVMeManager::open(
 NVMeManager::write_ertr::future<> NVMeManager::write(
   blk_paddr_t addr,
   bufferptr &bptr,
-  uint16_t stream)
+  StreamID stream)
 {
   ceph_assert(device);
   if (addr > super.end || addr < super.start ||
       bptr.length() > super.end - super.start) {
     return crimson::ct_error::erange::make();
   }
+  if (static_cast<uint16_t>(stream) >= static_cast<uint16_t>StreamID::MAX) {
+    stream = StreamID::NOT_ASSIGNED;
+  }
   return device->write(
     addr,
     bptr,
-    stream);
+    static_cast<uint16_t>(stream));
 }
 
 NVMeManager::read_ertr::future<> NVMeManager::read(

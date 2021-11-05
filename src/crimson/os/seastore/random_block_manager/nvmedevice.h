@@ -349,6 +349,19 @@ public:
    * NVMe device can guarantee IO latency within pre-defined time window. This
    * functionality will be analyzed soon.
    */
+
+   // Steram ID 5 is dedicated to Journal logging usage
+   // NOT_ASSIGNED is recommended for not classified data
+   // the usage of RBM_1~4 are not designed yet.
+   enum class StreamID
+   {
+     NOT_ASSIGNED = 0,
+     RBM_1 = 1,
+     RBM_2 = 2,
+     RBM_3 = 3,
+     RBM_4 = 4,
+     JOURNAL_LOG = 5,
+   };
 };
 
 /*
