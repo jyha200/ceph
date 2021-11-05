@@ -475,4 +475,74 @@ private:
 };
 using JournalRef = std::unique_ptr<Journal>;
 
+class TempCBJournal {
+  write_ertr::future<> append_record(ceph::bufferlist bl, laddr_t addr)
+  {
+    bufferlist to_write;
+    if (addr + bl.length() <= size) {
+      to_write = bl;
+    } else {
+      to_write.substr_of(bl, 0, size - addr);
+    }
+    logger().debug(
+        "append_record: offset {}, length {}",
+        addr,
+        to_write.length());
+
+    auto bptr = bufferptr(ceph::buffer::create_page_aligned(to_write.length()));
+    auto iter = to_write.cbegin();
+    iter.copy(to_write.length(), bptr.c_str());
+    return device->write(addr + get_start_addr(), bptr
+        ).handle_error(
+          write_ertr::pass_further{},
+          crimson::ct_error::assert_all{ "Invalid error device->write" }
+          ).safe_then([this, bl=std::move(bl), length=to_write.length()] {
+            if (bl.length() == length) {
+            // complete
+            return write_ertr::now();
+            } else {
+            // write remaining data---in this case,
+            // data is splited into two parts before due to the end of CBJournal.
+            // the following code is to write the second part
+            auto next = get_start_addr();
+            bufferlist next_write;
+            next_write.substr_of(bl, length, bl.length() - length);
+            auto bp = bufferptr(
+                ceph::buffer::create_page_aligned(next_write.length()));
+            auto iter = next_write.cbegin();
+            iter.copy(next_write.length(), bp.c_str());
+            return device->write(next, bp
+                ).handle_error(
+                  write_ertr::pass_further{},
+                  crimson::ct_error::assert_all{ "Invalid error device->write" }
+                  ).safe_then([] {
+                    return write_ertr::now();
+                    });
+            }
+        });
+  }
+  write_ertr::future<> device_write_bl(blk_paddr_t offset, ceph::bufferlist &bl)
+  {
+    auto length = bl.length();
+    if (offset + length > size + get_start_addr()) {
+      return crimson::ct_error::erange::make();
+    }
+    logger().debug(
+        "overwrite in CBJournal, offset {}, length {}",
+        offset,
+        length);
+    auto write_length = length < block_size ? block_size : length;
+    auto bptr = bufferptr(ceph::buffer::create_page_aligned(write_length));
+    auto iter = bl.cbegin();
+    iter.copy(bl.length(), bptr.c_str());
+    return device->write(offset, bptr
+        ).handle_error(
+          write_ertr::pass_further{},
+          crimson::ct_error::assert_all{ "Invalid error device->write" }
+          ).safe_then([] {
+            return write_ertr::now();
+            });
+  }
+}
+
 }
