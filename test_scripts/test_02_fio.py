@@ -34,7 +34,7 @@ def configure_ceph():
   subprocess.call("sudo bin/ceph osd pool set base_pool cache_min_flush_age 40", shell=True)
   subprocess.call("sudo bin/ceph osd pool set base_pool cache_min_evict_age 40", shell=True)
   subprocess.call("sudo bin/rbd create test_rbd --size 100G --pool base_pool", shell=True)
-  subprocess.call("sudo bin/rbd map --pool base_pool test_rbd", shell=True)
+#  subprocess.call("sudo bin/rbd map --pool base_pool test_rbd", shell=True)
 
 def process():
   global ceph_bin_abs_path
@@ -54,15 +54,38 @@ def process():
     "--ceph", ceph_bin_abs_path,\
     "--pool", "chunk_pool",\
     "--log", "test_02_sample_" + str(sample_ratio) + "_mode_" + str(mode) + ".log"], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+  if mode == 0:
+    print("seq fill")      
+    subprocess.call(["sudo", "fio",\
+        "--ioengine", "rbd",\
+        "--clientname", "admin",\
+        "--pool", "base_pool",\
+        "--rbdname", "test_rbd",\
+        "--invalidate", "0",\
+        "--direct", "1",\
+        "--bsrange", "4m-4m",\
+        "--name", "test",\
+        "--readwrite", "write",\
+        "--iodepth", "16",\
+        "--size", "100%",\
+        "--dedupe_percentage", "50"])
+    print("seq fill done")      
+
 # put objects
-  print("Do dedis in background\n")
-  dedis_log = open("test_02_dedis_sample_" + str(sample_ratio) + "_mode_" + str(mode) + ".log", "w")
-  dedis_process = subprocess.call("sudo DEDISbench -fcustom.ini -w -p -s4096", shell=True, stdout=dedis_log)
+  print("Do fio in background\n")
+  fio_log = open("test_02_fio_sample_" + str(sample_ratio) + "_mode_" + str(mode) + ".log", "w")
+  if mode == 0:
+    fio_process = subprocess.Popen("sudo fio --ioengine rbd --clientname admin --pool base_pool --rbdname test_rbd --invalidate 0 --direct 1 --bsrange 4m-4m --time_based --runtime 10000 --name test --readwrite randwrite --status-interval 1 --dedupe_percentage 50",
+        shell=True, stdout=fio_log)
+  else:
+    fio_process = subprocess.call("sudo fio --ioengine rbd --clientname admin --pool base_pool --rbdname test_rbd --invalidate 0 --direct 1 --bsrange 4m-4m --io_size 4g --name test --readwrite randwrite --status-interval 1 --dedupe_percentage 50",
+        shell=True, stdout=fio_log)
   start = time.time()
 
 # execute shallow crawler
   print("execute shallow crawler " + str(time.time() - start) + "\n")
   shallow_log = open("test_02_shallow.log", "w")
+#  command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 12 --shallow-crawling --sampling-ratio " + str(sample_ratio) + " --osd-count 3 --wakeup-period 10 --object-dedup-threshold 40 --chunk-size " + str(chunk_size)
   command = "sudo " + ceph_bin_abs_path + "/ceph-dedup-tool --iterative --op sample-dedup --base-pool base_pool --chunk-pool chunk_pool --max-thread 12 --shallow-crawling --sampling-ratio " + str(sample_ratio) + " --osd-count 3 --wakeup-period 10 --object-dedup-threshold 40 --chunk-size " + str(chunk_size)
   shallow_crawler = subprocess.Popen(command, shell=True, stdout=shallow_log)
   if mode == 0:
@@ -70,9 +93,9 @@ def process():
   else:
     print("wait 30s\n")
     time.sleep(30)
-    dedis_log.close()
+    fio_log.close()
 
-    print("quit dedis\n")
+    print("quit fio\n")
 
     print("wait 600s\n")
     time.sleep(600)
@@ -97,6 +120,8 @@ if __name__ == "__main__":
         global sample_ratio
         sample_ratio = sample_ratio_local
         global mode
+        #mode = 0
+        #process()
         mode = 1
         process()
 

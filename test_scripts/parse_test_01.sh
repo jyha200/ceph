@@ -1,0 +1,3 @@
+#/!bin/bash
+awk 'BEGIN{i=0};{if ($1=="TOTAL"){meta=$10;if($11=="GiB"){ meta=meta*1024}else if($11=="KiB"){meta=meta/1024} }; if ($1 == "base_pool") {base_used=$2; if ($3=="GiB"){base_used = base_used * 1024}else if($3=="KiB"){base_used = base_used / 1024}; base_wr=$14;if ($15=="GiB"){base_wr *= 1024}else if ($15 == "KiB"){base_wr /=1024}}; if ($1=="chunk_pool"){chunk_used=$2;if ($3=="GiB"){chunk_used*=1024;}else if($3=="KiB"){chunk_used /= 1024};chunk_wr=$14;if($15 == "GiB"){chunk_wr*=1024}else if($15 == "KiB"){chunk_wr/=1024} print i,meta,base_used,base_wr,chunk_used,chunk_wr;i+=5}}' test_01_mode_0.log > parsed_test_01_mode_0.log
+awk '{if ($1 == "WRITE:") {print $3,$6,$8}}' test_01_fio_mode_0.log >> parsed_test_01_mode_0.log
