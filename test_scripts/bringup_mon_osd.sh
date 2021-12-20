@@ -82,6 +82,7 @@ bringup_osd_remote() {
   echo "brinup_osd_remote done"
 }
 
+sudo ../build/bin/rbd unmap /dev/rbd0
 sudo pkill -9 ceph
 execute_remote_cmd "pkill -9 ceph" jyha 10.0.0.10
 execute_remote_cmd "pkill -9 ceph" jyha 10.0.0.30
@@ -89,7 +90,6 @@ sudo cp ./ceph.conf /etc/ceph/ceph.conf
 
 bringup_mon
 bringup_mgr
-bringup_osd /dev/nvme0n1
+bringup_osd /dev/nvme1n1
 bringup_osd_remote jyha 10.0.0.10 /home/cephlab/mnt/jyha/ceph/ /dev/nvme0n1
-bringup_osd_remote jyha 10.0.0.30 /home/jyha/ceph/ /dev/nvme0n1
-#bringup_osd_remote jyha 10.0.0.30 /home/jyha/ceph/ /dev/nvme2n1
+bringup_osd_remote jyha 10.0.0.30 /home/jyha/ceph/ /dev/nvme1n1
