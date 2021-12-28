@@ -17,6 +17,7 @@
 #define CEPH_BLK_HMSMRDEVICE_H
 
 #include <atomic>
+#include <queue>
 
 #include "include/types.h"
 #include "include/interval_set.h"
@@ -27,9 +28,13 @@
 #include "BlockDevice.h"
 #include "../kernel/KernelDevice.h"
 
-
 class HMSMRDevice final : public KernelDevice {
   int zbd_fd = -1;	///< fd for the zoned block device
+  int zbd_fd2 = -1;	///< fd for the zoned block device
+  int cns_fd = -1;
+  size_t nr_zones = -1;
+  std::recursive_mutex write_lock;
+  std::list<IOContext*> pending_iocs;
 
 public:
   HMSMRDevice(CephContext* cct, aio_callback_t cb, void *cbpriv,
@@ -51,7 +56,16 @@ public:
     // discard is a no-op on a zoned device
     return 0;
   }
+	int aio_write(uint64_t off, ceph::buffer::list& bl,
+			IOContext *ioc,
+			bool buffered,
+			int write_hint = WRITE_LIFE_NOT_SET) override;
+	void aio_submit(IOContext* ioc) override;
+	void do_aio_submit();
 
+	bool supported_bdev_label() override { return false; }
+	void post_write(IOContext* ioc);
+	void post_write2(IOContext* ioc);
 };
 
 #endif //CEPH_BLK_HMSMRDEVICE_H

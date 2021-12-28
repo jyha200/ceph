@@ -93,6 +93,9 @@ uint64_t IOContext::get_num_ios() const
 
 void IOContext::release_running_aios()
 {
+	while(num_running.load() > 0 || num_pending.load() > 0) {
+		usleep(1);
+	}
   ceph_assert(!num_running);
 #if defined(HAVE_LIBAIO) || defined(HAVE_POSIXAIO)
   // release aio contexts (including pinned buffers).

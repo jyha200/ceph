@@ -4680,6 +4680,11 @@ options:
   - hybrid
   - zoned
   with_legacy: true
+- name: bluestore_cns_path
+  type: str
+  level: advanced
+  desc: cns path
+  with_legacy: true
 - name: bluestore_freelist_blocks_per_key
   type: size
   level: dev

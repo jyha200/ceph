@@ -65,6 +65,9 @@ void ZonedFreelistManager::load_zone_state_from_db(
   ceph_assert(zone_num_from_db == zone_num);
 
   bufferlist bl = it->value();
+	if (bl.length() == 0) {
+		return;
+	}
   auto p = bl.cbegin();
   zone_state.decode(p);
 }

@@ -737,7 +737,8 @@ EOF
         bluestore prefer deferred size = 0
         bluestore prefer deferred size hdd = 0
         bluestore prefer deferred size ssd = 0
-        bluestore allocator = zoned"
+        ;bluestore allocator = zoned
+				bluestore cns path = /dev/nvme2n1"
         fi
         if [ "$io_uring_enabled" -eq 1 ]; then
             BLUESTORE_OPTS+="
@@ -971,7 +972,8 @@ EOF
             else
                 mkdir -p $CEPH_DEV_DIR/osd$osd
                 if [ -n "${block_devs[$osd]}" ]; then
-                    dd if=/dev/zero of=${block_devs[$osd]} bs=1M count=1
+                    #dd if=/dev/zero of=${block_devs[$osd]} bs=1M count=1
+										zbd reset ${block_devs[$osd]}
                     ln -s ${block_devs[$osd]} $CEPH_DEV_DIR/osd$osd/block
                 fi
                 if [ -n "${secondary_block_devs[$osd]}" ]; then

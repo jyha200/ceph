@@ -6849,7 +6849,12 @@ int BlueStore::mkfs()
   if (bdev->is_smr()) {
     freelist_type = "zoned";
     zone_size = bdev->get_zone_size();
-    first_sequential_zone = bdev->get_conventional_region_size() / zone_size;
+		if (cct->_conf->contains("bluestore_cns_path")) {
+			first_sequential_zone = 1;
+		}
+		else {
+	    first_sequential_zone = bdev->get_conventional_region_size() / zone_size;
+		}
     bdev->reset_all_zones();
   } else
 #endif
@@ -6891,9 +6896,9 @@ int BlueStore::mkfs()
     p2align(bdev->get_size(), min_alloc_size) - reserved);
 #ifdef HAVE_LIBZBD
   if (bdev->is_smr() && alloc != shared_alloc.a) {
-    shared_alloc.a->init_add_free(reserved,
-				  p2align(bdev->get_conventional_region_size(),
-					  min_alloc_size) - reserved);
+	  shared_alloc.a->init_add_free(reserved,
+		  p2align(bdev->get_conventional_region_size(),
+			  min_alloc_size) - reserved);
   }
 #endif
 
@@ -8790,8 +8795,6 @@ int BlueStore::_fsck_on_open(BlueStore::FSCKDepth depth, bool repair)
       bs.set(pos);
     }
   );
-
-
   if (repair) {
     repairer.init_space_usage_tracker(
       bdev->get_size(),
