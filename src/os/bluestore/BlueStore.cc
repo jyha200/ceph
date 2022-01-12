@@ -13157,8 +13157,8 @@ void BlueStore::_zoned_clean_zone(
   }
 
   if (a->get_live_bytes(zone) > 0) {
-    derr << "zone 0x" << std::hex << zone << " still has 0x" << a->get_live_bytes(zone)
-	 << " live bytes" << std::dec << dendl;
+    //derr << "zone 0x" << std::hex << zone << " still has 0x" << a->get_live_bytes(zone)
+//	 << " live bytes" << std::dec << dendl;
     // should we do something else here to avoid a live-lock in the event of a problem?
     return;
   }
