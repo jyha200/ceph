@@ -162,10 +162,21 @@ struct nvme_identify_namespace_data_t {
 };
 
 struct nvme_rw_command_t {
-  uint32_t common_dw[10];
 
+  /*cdw 00*/
+  uint32_t opcode : 8;
+  uint32_t fuse : 2;
+  uint32_t rsvd : 4;
+  uint32_t psdt : 2;
+
+  uint32_t rsvd1 : 16;
+
+  uint32_t common_dw[9];
+  
+  /*cdw 10-11*/
   uint64_t s_lba;
 
+  /*cdw 12*/
   uint32_t nlb : 16; // 0's based value
   uint32_t reserved : 4;
   uint32_t d_type : 4;
@@ -175,20 +186,41 @@ struct nvme_rw_command_t {
   uint32_t fua : 1;
   uint32_t lr : 1;
 
-  uint32_t reserved3 : 16;
-  uint32_t dspec : 16;
+  /*cdw 13*/
+  uint32_t zsa : 8;
+  uint32_t select_all : 1;
+  uint32_t reserved3 : 23;
 
   static const uint32_t DTYPE_STREAM = 1;
 };
 
 struct nvme_io_command_t {
   union {
-    nvme_passthru_cmd common;
+    nvme_passthru_cmd64 common;
     nvme_rw_command_t rw;
+    uint32_t raw[16];
   };
   static const uint8_t OPCODE_WRITE = 0x01;
-  static const uint8_t OPCODE_READ = 0x01;
+  static const uint8_t OPCODE_READ = 0x02;
 };
+
+struct uring_completion{
+   union{
+     struct{
+       /* dword0 */
+       uint32_t cdw0;
+       /* dword1 */
+       uint32_t rsvd1;
+     };
+     uint64_t alba; // assigned lba
+   };
+   /* dword2 */
+   uint16_t sqhd; // submission queue head ptr
+   uint16_t sqid; // submission queue identifier
+   /* dword3 */
+   uint16_t cid; // command identifier
+   int err;
+ };
 
 using read_ertr = crimson::errorator<
   crimson::ct_error::input_output_error,
@@ -308,6 +340,9 @@ public:
     nvme_io_command_t& command) { return seastar::make_ready_future<int>(0); }
   virtual nvme_command_ertr::future<int> pass_admin(
     nvme_admin_command_t& command) { return seastar::make_ready_future<int>(0); }
+  virtual nvme_command_ertr::future<uring_completion *> uring_pass_through_io(
+    nvme_io_command_t& command) { 
+    return seastar::make_ready_future<uring_completion *>(reinterpret_cast<uring_completion *>(0)); }
 
   /*
    * End-to-End Data Protection

@@ -19,27 +19,56 @@ namespace crimson::os::seastore::nvme_device {
 class IOUringNVMeDevice : public NVMeBlockDevice {
   io_uring ring;
   static const unsigned QUEUE_DEPTH = 1024;
-  int fd;
-public:
-  virtual read_ertr::future<> read(
-    uint64_t offset,
-    bufferptr &bptr);
+  struct block_uring_cmd {
+    __u32   ioctl_cmd;
+    __u32   unused1;
+    __u64   unused2[4];
+  };
 
-  virtual write_ertr::future<> write(
+  struct data_info {
+    nvme_io_command_t io_cmd;
+    uring_completion uring_cpl;
+    bool done;
+    int err;
+  };
+  int fd;
+  bool isChardev = false;
+  bool isBlockdev = false;
+  int flag;
+
+public:
+
+  IOUringNVMeDevice() {}
+  ~IOUringNVMeDevice() = default;
+
+  open_ertr::future<> open(
+    const std::string &in_path,
+    seastar::open_flags mode) override;
+
+  write_ertr::future<> write(
     uint64_t offset,
     bufferptr &bptr,
-    uint16_t stream = 0);
+    uint16_t stream = 0) override { return seastar::now();};
 
-  virtual discard_ertr::future<> discard(
+  read_ertr::future<> read(
     uint64_t offset,
-    uint64_t len);
+    bufferptr &bptr) override{ return seastar::now();};
 
-  virtual open_ertr::future<> open(
-      const std::string& path,
-      seastar::open_flags mode) = 0;
-  virtual seastar::future<> close() = 0;
+  seastar::future<> close() override;
+
+  discard_ertr::future<> discard(
+    uint64_t offset,
+    uint64_t len) override{ return seastar::now();};
+
+  nvme_command_ertr::future<int> pass_admin(
+    nvme_admin_command_t& admin_cmd) override{ return seastar::make_ready_future<int>(1);};
+  nvme_command_ertr::future<uring_completion*> uring_pass_through_io(
+    nvme_io_command_t& io_cmd);
 
 private:
   bool io_uring_supported() { return true; };
+  static void _create_pass_through_command(
+   io_uring_sqe *sqe, nvme_io_command_t& io_cmd, 
+   int fd, data_info *di, block_uring_cmd *blk_cmd);  
 };
 }
