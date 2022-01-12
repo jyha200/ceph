@@ -972,8 +972,11 @@ EOF
             else
                 mkdir -p $CEPH_DEV_DIR/osd$osd
                 if [ -n "${block_devs[$osd]}" ]; then
-                    #dd if=/dev/zero of=${block_devs[$osd]} bs=1M count=1
-										zbd reset ${block_devs[$osd]}
+                    if [ "$zoned_enabled" -eq 1 ]; then
+										    zbd reset ${block_devs[$osd]}
+                    else
+                        dd if=/dev/zero of=${block_devs[$osd]} bs=1M count=1
+                    fi
                     ln -s ${block_devs[$osd]} $CEPH_DEV_DIR/osd$osd/block
                 fi
                 if [ -n "${secondary_block_devs[$osd]}" ]; then
