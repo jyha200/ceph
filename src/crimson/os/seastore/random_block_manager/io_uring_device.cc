@@ -88,7 +88,7 @@ namespace crimson::os::seastore::nvme_device {
     ::close(fd);
     return seastar::now();
   }
-
+ 
   void IOUringNVMeDevice::_create_pass_through_command(
   io_uring_sqe *sqe, nvme_io_command_t& io_cmd, 
   int fd, data_info *di, block_uring_cmd *blk_cmd) { 
@@ -111,6 +111,180 @@ namespace crimson::os::seastore::nvme_device {
 #else                                                            
     blk_cmd->ioctl_cmd = NVME_IOCTL_IO_CMD;                      
 #endif
+  } 
+
+  nvme_io_command_t IOUringNVMeDevice::_create_write_command(
+  uint64_t offset, bufferptr &bptr){
+    nvme_io_command_t io_cmd;
+    memset(&io_cmd, 0, sizeof(io_cmd));
+    io_cmd.common.opcode = io_cmd.OPCODE_WRITE;
+    io_cmd.common.nsid = 1;
+    if (flag == IORING_SETUP_IOPOLL){
+      io_cmd.rw.fuse = 1;
+    }
+    io_cmd.rw.s_lba = offset / block_size;
+    io_cmd.rw.nlb = 0; //zero-based
+    io_cmd.common.addr = (uint64_t)bptr.c_str();
+    io_cmd.common.data_len = bptr.length();
+
+    return io_cmd;
+  }
+
+  nvme_io_command_t IOUringNVMeDevice::_create_read_command(
+  uint64_t offset, bufferptr &bptr){
+    nvme_io_command_t io_cmd;
+    memset(&io_cmd, 0, sizeof(io_cmd));
+    io_cmd.common.opcode = io_cmd.OPCODE_READ; 
+    io_cmd.common.nsid = 1;
+    if (flag == IORING_SETUP_IOPOLL){
+      io_cmd.rw.fuse = 1;
+    }
+    io_cmd.rw.s_lba = offset / block_size;
+    io_cmd.rw.nlb = 0; //zero-based
+    io_cmd.common.addr = (uint64_t)bptr.c_str();
+    io_cmd.common.data_len = bptr.length();
+
+    return io_cmd;
+  }
+
+  void IOUringNVMeDevice::_initialize_data_info(
+  data_info *di, nvme_io_command_t io_cmd){
+    uring_completion ucpl;
+    memset(&ucpl, 0, sizeof(ucpl));
+    di->io_cmd = io_cmd;
+    di->done = false;
+    di->uring_cpl = ucpl; 
+    di->err = 0;
+  }
+
+  write_ertr::future<> IOUringNVMeDevice::write(                                                               
+      uint64_t offset, bufferptr &bptr, uint16_t stream) {                                                                      
+    logger().debug("Block: write offset {} len {}", offset, bptr.length());                                   
+    struct block_uring_cmd  *blk_cmd = NULL;
+    struct io_uring_sqe *sqe = NULL;                                                                         
+    int ret = 0;                                                                                             
+    sqe = io_uring_get_sqe(&ring);                                                                           
+    if (!sqe){                                                                                               
+      logger().error("FAILED: io_uring_get_sqe");                                                          
+      return crimson::ct_error::input_output_error::make();                                                
+    }                  
+    nvme_io_command_t io_cmd = _create_write_command(offset, bptr);
+    data_info *di = new data_info();
+    _initialize_data_info(di, io_cmd);
+    if (isBlockdev) { // if block device(ex. nvme0n1)              
+      io_uring_prep_write(sqe, fd, bptr.c_str(), bptr.length(), offset);                                                           
+      sqe->user_data = reinterpret_cast<uint64_t>(di);
+    } else if (isChardev) { // else if char device(ex. ng0n1)
+      _create_pass_through_command(sqe, io_cmd, fd, di, blk_cmd);                                                          
+    } else {
+      return crimson::ct_error::input_output_error::make();                                                
+    }
+    ret = io_uring_submit(&ring);                                                                            
+    if (ret < 0){                                                                                            
+      logger().error("IOUringNVMeDevice::write: \
+      submit io_uring submission queue failed ({})", ret);
+      return crimson::ct_error::input_output_error::make();                                                
+    }                                                                                                        
+    return seastar::do_until(
+    [di](){
+      if(di->done == true){
+        return true;
+      }
+      return false;
+    },
+    [this, di](){
+      struct io_uring_cqe *cqe;
+      int ret = 0;
+      ret = io_uring_peek_cqe(&ring, &cqe); 
+      // To use iouring_write, flag should be 0                                                                    
+      if(ret == -EAGAIN){
+        return seastar::later();
+      }
+      if (ret < 0){                                                                                            
+        logger().error("IOUringNVMeDevice::write: \
+        wait io_uring completion queue failed ({})", ret);
+        di->uring_cpl.err = ret;
+        di->done = true;
+        return seastar::now();
+      }
+      data_info *completed_di = reinterpret_cast<data_info *>(io_uring_cqe_get_data(cqe));
+      if (cqe->res < 0){                                                                             
+        logger().error("IOUringNVMeDevice::write: \
+        get data from completion queue failed ({})", strerror(-cqe->res));
+        completed_di->uring_cpl.err  = cqe->res;
+      }                                                                                                        
+      completed_di->done = true;
+      io_uring_cqe_seen(&ring, cqe);                                                                           
+      return seastar::now();
+    }
+    ).then([di](){
+      delete di;
+      return write_ertr::now();});
+    }
+
+  read_ertr::future<> IOUringNVMeDevice::read(                                                               
+      uint64_t offset, bufferptr &bptr) {                                                                      
+    logger().debug("Block: read offset {} len {}", offset, bptr.length());                                   
+    struct block_uring_cmd  *blk_cmd = NULL;
+    struct io_uring_sqe *sqe = NULL;                                                                         
+    int ret = 0;                                                                                             
+    sqe = io_uring_get_sqe(&ring);                                                                           
+    if (!sqe){                                                                                               
+      logger().error("FAILED: io_uring_get_sqe");                                                          
+      return crimson::ct_error::input_output_error::make();                                                
+    }                             
+    nvme_io_command_t io_cmd = _create_read_command(offset, bptr);
+    data_info *di = new data_info();
+    _initialize_data_info(di, io_cmd);
+    if (isBlockdev) { // if block device(ex. nvme0n1)              
+      io_uring_prep_read(sqe, fd, bptr.c_str(), bptr.length(), offset);                                                           
+      sqe->user_data = reinterpret_cast<uint64_t>(di);
+    } else if (isChardev) { // else if char device(ex. ng0n1)
+      _create_pass_through_command(sqe, io_cmd, fd, di, blk_cmd);                                                          
+    } else {
+      return crimson::ct_error::input_output_error::make();                                                
+    }
+    ret = io_uring_submit(&ring);                                                                            
+    if (ret < 0){                                                                                            
+      logger().error("IOUringNVMeDevice::read: \
+      submit io_uring submission queue failed ({})", ret);
+      return crimson::ct_error::input_output_error::make();                                                
+    }                                                                                                        
+    return seastar::do_until(
+        [di](){
+        if(di->done == true){
+          return true;
+        }
+        return false;
+        },
+        [this, di](){
+        struct io_uring_cqe *cqe;
+        int ret = 0;
+        ret = io_uring_peek_cqe(&ring, &cqe); 
+        // To use iouring_read, flag should be 0                                                                   
+        if(ret == -EAGAIN){
+          return seastar::later();
+        }
+        if (ret < 0){                                                                                            
+          logger().error("IOUringNVMeDevice::read: \
+          wait io_uring completion queue failed ({})", ret);
+          di->uring_cpl.err = ret;
+          di->done = true;
+          return seastar::now();                                                
+        }
+        data_info *completed_di = reinterpret_cast<data_info *>(io_uring_cqe_get_data(cqe));
+        if (cqe->res < 0){                                                                             
+          logger().error("IOUringNVMeDevice::read: \
+          get data from completion queue failed ({})", strerror(-cqe->res));
+          completed_di->uring_cpl.err  = cqe->res;
+        }                                                                                                        
+        completed_di->done = true;
+        io_uring_cqe_seen(&ring, cqe);                                                                           
+        return seastar::now();
+        }
+    ).then([di](){
+      delete di;
+      return read_ertr::now();});
   }
 
   nvme_command_ertr::future<uring_completion*> IOUringNVMeDevice::uring_pass_through_io(
@@ -125,13 +299,8 @@ namespace crimson::os::seastore::nvme_device {
       getting the io_uring submission queue is failed ({})", ret);
       return crimson::ct_error::input_output_error::make();
     }
-    data_info* di = new data_info();
-    uring_completion ucpl;
-    memset(&ucpl, 0, sizeof(ucpl));
-    di->io_cmd = io_cmd;
-    di->done = false;
-    di->uring_cpl = ucpl; 
-    di->err = 0;
+    data_info *di = new data_info();
+    _initialize_data_info(di, io_cmd);
     if (isBlockdev) { // if block device(ex. nvme0n1)              
       logger().error("uring_pass_through_io: \
       this function only supports CharDevice now :({})", EOPNOTSUPP);

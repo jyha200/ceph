@@ -48,11 +48,11 @@ public:
   write_ertr::future<> write(
     uint64_t offset,
     bufferptr &bptr,
-    uint16_t stream = 0) override { return seastar::now();};
+    uint16_t stream = 0) override;
 
   read_ertr::future<> read(
     uint64_t offset,
-    bufferptr &bptr) override{ return seastar::now();};
+    bufferptr &bptr) override;
 
   seastar::future<> close() override;
 
@@ -70,5 +70,8 @@ private:
   static void _create_pass_through_command(
    io_uring_sqe *sqe, nvme_io_command_t& io_cmd, 
    int fd, data_info *di, block_uring_cmd *blk_cmd);  
+  static void _initialize_data_info(data_info *di, nvme_io_command_t io_cmd);
+  nvme_io_command_t _create_write_command(uint64_t offset, bufferptr &bptr);
+  nvme_io_command_t _create_read_command(uint64_t offset, bufferptr &bptr);
 };
 }

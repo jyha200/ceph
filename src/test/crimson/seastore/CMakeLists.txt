@@ -93,6 +93,17 @@ target_link_libraries(
   ${CMAKE_DL_LIBS}
   crimson-seastore)
 
+add_executable(unittest-seastore-iouring
+  nvmedevice/test_iouringdevice.cc)
+add_ceph_test(unittest-seastore-iouring
+  unittest-seastore-iouring --memory 256M --smp 1)
+target_link_libraries(
+  unittest-seastore-iouring
+  crimson::gtest
+  crimson-seastore
+  aio)
+
+
 add_executable(unittest-seastore-nvmedevice
   nvmedevice/test_nvmedevice.cc)
 add_ceph_test(unittest-seastore-nvmedevice
