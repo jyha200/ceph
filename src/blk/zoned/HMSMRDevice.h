@@ -36,6 +36,14 @@ class HMSMRDevice final : public KernelDevice {
   std::recursive_mutex write_lock;
   std::list<IOContext*> pending_iocs;
 
+  struct zone_pending_io_t {
+    std::list<aio_t> aios;
+    std::recursive_mutex lock;
+    bool running = false;
+  };
+
+  zone_pending_io_t* pending_ios;
+
 public:
   HMSMRDevice(CephContext* cct, aio_callback_t cb, void *cbpriv,
               aio_callback_t d_cb, void *d_cbpriv);
@@ -56,16 +64,11 @@ public:
     // discard is a no-op on a zoned device
     return 0;
   }
-	int aio_write(uint64_t off, ceph::buffer::list& bl,
-			IOContext *ioc,
-			bool buffered,
-			int write_hint = WRITE_LIFE_NOT_SET) override;
 	void aio_submit(IOContext* ioc) override;
-	void do_aio_submit();
+	void do_aio_submit(uint64_t zone, bool completed);
+  void post_write(uint64_t zone);
 
 	bool supported_bdev_label() override { return false; }
-	void post_write(IOContext* ioc);
-	void post_write2(IOContext* ioc);
 };
 
 #endif //CEPH_BLK_HMSMRDEVICE_H

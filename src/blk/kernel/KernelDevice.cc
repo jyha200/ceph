@@ -632,7 +632,11 @@ void KernelDevice::_aio_thread()
 	// call aio_wake we cannot touch ioc or aio[] as the caller
 	// may free it.
 	if (ioc->priv) {
-	  if (--ioc->num_running == 0) {
+    if (is_smr()) {
+      ioc->num_running--;
+      aio_callback(aio_callback_priv, aio[i]);
+    }
+    else if (--ioc->num_running == 0) {
 	    aio_callback(aio_callback_priv, ioc->priv);
 	  }
 	} else {

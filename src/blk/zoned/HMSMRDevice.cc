@@ -39,34 +39,26 @@ struct hmsmr_cbpriv {
     bdev(bdev) { }
 };
 
-static void hmsmr_cb(void* priv, void*priv2)
+static uint64_t get_zone(uint64_t offset, uint64_t zone_size) {
+  return offset / zone_size;
+}
+
+static void hmsmr_cb(void* priv, void* priv2)
 {
   hmsmr_cbpriv* casted_priv = static_cast<hmsmr_cbpriv*>(priv);
-  BlueStore::TransContext* trans_context = static_cast<BlueStore::TransContext*>(priv2);
-  IOContext* ioc = &trans_context->ioc;
+  aio_t* aio = static_cast<aio_t*>(priv2);
+  IOContext* ioc = static_cast<IOContext*>(aio->priv);
   HMSMRDevice* bdev = casted_priv->bdev;
-  bdev->post_write(ioc);
 
-  if (ioc->num_pending > 0) {
+  uint64_t completed_zone = get_zone(aio->offset, bdev->get_zone_size());
+  bdev->do_aio_submit(completed_zone, true);
+
+  if (ioc->num_pending == 0 && ioc->num_running == 0) {
+    ioc->pending_aios.clear();
+    casted_priv->cb(casted_priv->cbpriv, ioc->priv);
   }
-  else {
-    bdev->post_write2(ioc);
-    casted_priv->cb(casted_priv->cbpriv, priv2);
-  }
-  bdev->do_aio_submit();
 }
 
-void HMSMRDevice::post_write2(IOContext* ioc) {
-  dout(20) << __func__ << " ioc done " << ioc
-    << " pending " << ioc->num_pending.load()
-    << " running " << ioc->num_running.load() <<dendl;
-}
-
-void HMSMRDevice::post_write(IOContext* ioc) {
-  dout(20) << __func__ << " ioc " << ioc
-    << " pending " << ioc->num_pending.load()
-    << " running " << ioc->num_running.load() <<dendl;
-}
 HMSMRDevice::HMSMRDevice(CephContext* cct,
     aio_callback_t cb,
     void *cbpriv,
@@ -79,6 +71,11 @@ HMSMRDevice::HMSMRDevice(CephContext* cct,
 bool HMSMRDevice::support(const std::string& path)
 {
   return zbd_device_is_zoned(path.c_str()) == 1;
+}
+
+void HMSMRDevice::post_write(uint64_t zone) {
+  std::lock_guard lock(pending_ios[zone].lock);
+  pending_ios[zone].aios.pop_front();
 }
 
 int HMSMRDevice::_post_open()
@@ -119,6 +116,8 @@ int HMSMRDevice::_post_open()
     conventional_region_size = nr_zones * zone_size;
   }
 
+  pending_ios = new zone_pending_io_t[nr_zones];
+
   dout(10) << __func__ << " setting zone size to " << zone_size
     << " and conventional region size to " << conventional_region_size
     << " size: " << get_size() << dendl;
@@ -135,18 +134,11 @@ fail:
   return r;
 }
 
-int HMSMRDevice::aio_write(
-    uint64_t off,
-    ceph::buffer::list& bl,
-    IOContext *ioc,
-    bool buffered,
-    int write_hint) {
-  int ret = KernelDevice::aio_write(off, bl, ioc, buffered, write_hint);
-  return ret;
-}
-
 void HMSMRDevice::_pre_close()
 {
+  if (pending_ios) {
+    delete [] pending_ios;
+  }
   if (zbd_fd >= 0) {
     zbd_close(zbd_fd);
     zbd_fd = -1;
@@ -197,17 +189,21 @@ std::vector<uint64_t> HMSMRDevice::get_zones()
 
 void HMSMRDevice::aio_submit(IOContext* ioc) {
   if (ioc->pending_aios.front().iocb.aio_lio_opcode == IO_CMD_PWRITEV) {
-    {
-      std::lock_guard lock(write_lock);
-      if (ioc != pending_iocs.back()) {
-        dout(10) << __func__ << " push ioc " << ioc << dendl;
-        pending_iocs.push_back(ioc);
-      }
-      else {
-        dout(10) << __func__ << " coflict ioc " << ioc << dendl;
-      }
+    std::list<uint64_t> requested_zones;
+    for (auto pending_aio = ioc->pending_aios.begin();
+        pending_aio != ioc->pending_aios.end();
+        ++pending_aio) {
+      uint64_t zone = get_zone(pending_aio->offset, zone_size);
+      pending_aio->priv = static_cast<IOContext*>(ioc);
+      std::lock_guard lock(pending_ios[zone].lock);
+      pending_ios[zone].aios.push_back(*pending_aio);
+      requested_zones.push_back(zone);
     }
-    do_aio_submit();
+    for (auto zone = requested_zones.begin();
+        zone != requested_zones.end();
+        ++zone) {
+      do_aio_submit(*zone, false);
+    }
   }
   else {
     KernelDevice::aio_submit(ioc);
@@ -215,50 +211,46 @@ void HMSMRDevice::aio_submit(IOContext* ioc) {
   return;
 }
 
-void HMSMRDevice::do_aio_submit() {
-  std::lock_guard lock(write_lock);
-  if (pending_iocs.size() == 0) {
-    dout(10) << __func__ << " no pending ioc" << dendl;
-    return;
-  }
-  auto ioc = pending_iocs.front();
-  dout(10) << __func__ << " target pending ioc" <<  ioc <<  dendl;
-
-  if (ioc->num_running.load() > 0) {
-    dout(10) << __func__ << " return due to running aio of ioc " << ioc << dendl;
-    return;
-  }
-
-  if (ioc->num_pending.load() == 0) {
-    dout(10) << __func__ << " all aios in ioc " << ioc << " are submitted" << dendl;
-    pending_iocs.pop_front();
-    if (pending_iocs.size() == 0) {
-      dout(10) << __func__ << " no pending ioc" << dendl;
+void HMSMRDevice::do_aio_submit(uint64_t zone, bool completed) {
+  std::lock_guard lock(pending_ios[zone].lock);
+  if (completed) {
+    auto aio = pending_ios[zone].aios.front();
+    dout(10) << __func__ << " completed " <<  aio <<  dendl;
+    pending_ios[zone].aios.pop_front();
+    pending_ios[zone].running = false;
+  } else {
+    if (pending_ios[zone].running) {
+      dout(10) << __func__ << " still running zone " <<  zone <<  dendl;
       return;
     }
-    ioc = pending_iocs.front();
+  }
+  if (pending_ios[zone].aios.size() == 0) {
+    dout(10) << __func__ << " no pending aio zone " <<  zone <<  dendl;
+    return;
   }
 
-  list<aio_t>::iterator e = ioc->running_aios.begin();
-  auto pending_aio = ioc->pending_aios.front();
-  dout(10) << __func__ << " off " << std::hex << pending_aio.offset << " len " << std::hex << pending_aio.length << dendl;
-  ioc->running_aios.push_front(pending_aio);
-  ioc->pending_aios.pop_front();
-  int pending = 1;
+  auto pending_aio = pending_ios[zone].aios.begin();
+  auto ioc = static_cast<IOContext*>(pending_aio->priv);
+  dout(10) << __func__ << " target pending ioc" <<  ioc <<  dendl;
+
+  dout(10) << __func__ << " off " << std::hex << pending_aio->offset << " len " << std::hex << pending_aio->length << dendl;
   dout(10) << __func__ << " before submission ioc " << ioc
     << " pending " << ioc->num_pending.load()
     << " running " << ioc->num_running.load() <<dendl;
 
   ioc->num_running++;
   ioc->num_pending--;
+
   dout(10) << __func__ << " after submission ioc " << ioc
     << " pending " << ioc->num_pending.load()
     << " running " << ioc->num_running.load() <<dendl;
 
   void* priv = static_cast<void*>(ioc);
   int r, retries = 0;
+  auto end = std::next(pending_aio, 1);
+  int pending = 1;
   assert(pending <= std::numeric_limits<uint16_t>::max());
-  r = io_queue->submit_batch(ioc->running_aios.begin(), e,
+  r = io_queue->submit_batch(pending_aio, end,
       pending, priv, &retries);
 
   if (retries)
@@ -267,6 +259,8 @@ void HMSMRDevice::do_aio_submit() {
     derr << " aio submit got " << cpp_strerror(r) << dendl;
     ceph_assert(r == 0);
   }
+
+  pending_ios[zone].running = true;
 
   return;
 }
