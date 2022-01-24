@@ -1643,6 +1643,10 @@ public:
 #ifdef WITH_BLKIN
     ZTracer::Trace trace;
 #endif
+    bool post_write = false;
+
+    std::atomic<bool> finalized = false;
+
 
     explicit TransContext(CephContext* cct, Collection *c, OpSequencer *o,
 			  std::list<Context*> *on_commits)
@@ -2453,9 +2457,8 @@ private:
   void _txc_state_proc(TransContext *txc);
   void _txc_aio_submit(TransContext *txc);
 public:
-  void txc_aio_finish(void *p) {
-    _txc_state_proc(static_cast<TransContext*>(p));
-  }
+  void txc_aio_finish(void *p);
+
 private:
   void _txc_finish_io(TransContext *txc);
   void _txc_finalize_kv(TransContext *txc, KeyValueDB::Transaction t);

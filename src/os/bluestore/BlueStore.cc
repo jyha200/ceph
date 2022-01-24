@@ -12059,6 +12059,26 @@ void BlueStore::_txc_update_store_statfs(TransContext *txc)
   } 
   txc->statfs_delta.reset();
 }
+void BlueStore::txc_aio_finish(void *p) {
+  TransContext* txc = static_cast<TransContext*>(p);
+  if (txc->post_write) {
+    _txc_write_nodes(txc, txc->t);
+
+    // journal deferred items
+    if (txc->deferred_txn) {
+      txc->deferred_txn->seq = ++deferred_seq;
+      bufferlist bl;
+      encode(*txc->deferred_txn, bl);
+      string key;
+      get_deferred_key(txc->deferred_txn->seq, &key);
+      txc->t->set(PREFIX_DEFERRED, key, bl);
+    }
+
+    _txc_finalize_kv(txc, txc->t);
+  }
+
+  _txc_state_proc(txc);
+}
 
 void BlueStore::_txc_state_proc(TransContext *txc)
 {
@@ -13567,19 +13587,20 @@ int BlueStore::queue_transactions(
   }
   _txc_calc_cost(txc);
 
-  _txc_write_nodes(txc, txc->t);
+  if (!txc->post_write) {
+    _txc_write_nodes(txc, txc->t);
+    // journal deferred items
+    if (txc->deferred_txn) {
+      txc->deferred_txn->seq = ++deferred_seq;
+      bufferlist bl;
+      encode(*txc->deferred_txn, bl);
+      string key;
+      get_deferred_key(txc->deferred_txn->seq, &key);
+      txc->t->set(PREFIX_DEFERRED, key, bl);
+    }
 
-  // journal deferred items
-  if (txc->deferred_txn) {
-    txc->deferred_txn->seq = ++deferred_seq;
-    bufferlist bl;
-    encode(*txc->deferred_txn, bl);
-    string key;
-    get_deferred_key(txc->deferred_txn->seq, &key);
-    txc->t->set(PREFIX_DEFERRED, key, bl);
+    _txc_finalize_kv(txc, txc->t);
   }
-
-  _txc_finalize_kv(txc, txc->t);
 
 #ifdef WITH_BLKIN
   if (txc->trace) {
@@ -14858,6 +14879,9 @@ int BlueStore::_do_alloc_write(
         return boost::optional<double>();
       }
     );
+  }
+  if (bdev->is_smr()) {
+    txc->post_write = true;
   }
 
   // checksum
