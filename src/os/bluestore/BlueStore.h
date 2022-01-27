@@ -1529,6 +1529,90 @@ public:
     }
   };
 
+  struct WriteContext {
+    bool buffered = false;          ///< buffered write
+    bool compress = false;          ///< compressed write
+    uint64_t target_blob_size = 0;  ///< target (max) blob size
+    unsigned csum_order = 0;        ///< target checksum chunk order
+
+    old_extent_map_t old_extents;   ///< must deref these blobs
+    interval_set<uint64_t> extents_to_gc; ///< extents for garbage collection
+
+    struct write_item {
+      uint64_t logical_offset;      ///< write logical offset
+      BlobRef b;
+      uint64_t blob_length;
+      uint64_t b_off;
+      ceph::buffer::list bl;
+      uint64_t b_off0; ///< original offset in a blob prior to padding
+      uint64_t length0; ///< original data length prior to padding
+
+      bool mark_unused;
+      bool new_blob; ///< whether new blob was created
+
+      bool compressed = false;
+      ceph::buffer::list compressed_bl;
+      size_t compressed_len = 0;
+
+      write_item(
+	uint64_t logical_offs,
+        BlobRef b,
+        uint64_t blob_len,
+        uint64_t o,
+        ceph::buffer::list& bl,
+        uint64_t o0,
+        uint64_t l0,
+        bool _mark_unused,
+	bool _new_blob)
+       :
+         logical_offset(logical_offs),
+         b(b),
+         blob_length(blob_len),
+         b_off(o),
+         bl(bl),
+         b_off0(o0),
+         length0(l0),
+         mark_unused(_mark_unused),
+         new_blob(_new_blob) {}
+    };
+
+    std::vector<write_item> writes;                 ///< blobs we're writing
+
+    /// partial clone of the context
+    void fork(const WriteContext& other) {
+      buffered = other.buffered;
+      compress = other.compress;
+      target_blob_size = other.target_blob_size;
+      csum_order = other.csum_order;
+    }
+    void write(
+        uint64_t loffs,
+        BlobRef b,
+        uint64_t blob_len,
+        uint64_t o,
+        ceph::buffer::list& bl,
+        uint64_t o0,
+        uint64_t len0,
+        bool _mark_unused,
+        bool _new_blob) {
+      writes.emplace_back(loffs,
+          b,
+          blob_len,
+          o,
+          bl,
+          o0,
+          len0,
+          _mark_unused,
+          _new_blob);
+    }
+    /// Checks for writes to the same pextent within a blob
+    bool has_conflict(
+        BlobRef b,
+        uint64_t loffs,
+        uint64_t loffs_end,
+        uint64_t min_alloc_size);
+  };
+
   struct TransContext final : public AioContext {
     MEMPOOL_CLASS_HELPERS();
 
@@ -1643,10 +1727,18 @@ public:
 #ifdef WITH_BLKIN
     ZTracer::Trace trace;
 #endif
-    bool post_write = false;
 
+    struct PostWriteContext {
+      WriteContext wctx;
+      uint64_t offset = 0;
+      uint64_t length = 0;
+      OnodeRef onode;
+    };
+
+    std::list<PostWriteContext> post_wctxs;
     std::atomic<bool> finalized = false;
-
+    bool post_write = false;
+    CollectionRef coll;
 
     explicit TransContext(CephContext* cct, Collection *c, OpSequencer *o,
 			  std::list<Context*> *on_commits)
@@ -3113,89 +3205,6 @@ private:
 
   // --------------------------------------------------------
   // write ops
-
-  struct WriteContext {
-    bool buffered = false;          ///< buffered write
-    bool compress = false;          ///< compressed write
-    uint64_t target_blob_size = 0;  ///< target (max) blob size
-    unsigned csum_order = 0;        ///< target checksum chunk order
-
-    old_extent_map_t old_extents;   ///< must deref these blobs
-    interval_set<uint64_t> extents_to_gc; ///< extents for garbage collection
-
-    struct write_item {
-      uint64_t logical_offset;      ///< write logical offset
-      BlobRef b;
-      uint64_t blob_length;
-      uint64_t b_off;
-      ceph::buffer::list bl;
-      uint64_t b_off0; ///< original offset in a blob prior to padding
-      uint64_t length0; ///< original data length prior to padding
-
-      bool mark_unused;
-      bool new_blob; ///< whether new blob was created
-
-      bool compressed = false;
-      ceph::buffer::list compressed_bl;
-      size_t compressed_len = 0;
-
-      write_item(
-	uint64_t logical_offs,
-        BlobRef b,
-        uint64_t blob_len,
-        uint64_t o,
-        ceph::buffer::list& bl,
-        uint64_t o0,
-        uint64_t l0,
-        bool _mark_unused,
-	bool _new_blob)
-       :
-         logical_offset(logical_offs),
-         b(b),
-         blob_length(blob_len),
-         b_off(o),
-         bl(bl),
-         b_off0(o0),
-         length0(l0),
-         mark_unused(_mark_unused),
-	 new_blob(_new_blob) {}
-    };
-    std::vector<write_item> writes;                 ///< blobs we're writing
-
-    /// partial clone of the context
-    void fork(const WriteContext& other) {
-      buffered = other.buffered;
-      compress = other.compress;
-      target_blob_size = other.target_blob_size;
-      csum_order = other.csum_order;
-    }
-    void write(
-      uint64_t loffs,
-      BlobRef b,
-      uint64_t blob_len,
-      uint64_t o,
-      ceph::buffer::list& bl,
-      uint64_t o0,
-      uint64_t len0,
-      bool _mark_unused,
-      bool _new_blob) {
-      writes.emplace_back(loffs,
-                          b,
-                          blob_len,
-                          o,
-                          bl,
-                          o0,
-                          len0,
-                          _mark_unused,
-                          _new_blob);
-    }
-    /// Checks for writes to the same pextent within a blob
-    bool has_conflict(
-      BlobRef b,
-      uint64_t loffs,
-      uint64_t loffs_end,
-      uint64_t min_alloc_size);
-  };
 
   void _do_write_small(
     TransContext *txc,
