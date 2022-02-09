@@ -17,7 +17,11 @@ struct ioring_data {
   pthread_mutex_t sq_mutex;
   int epoll_fd = -1;
   std::map<int, int> fixed_fds_map;
+  bool use_append = false;
 };
+
+static void post_process_append(aio_t *io, io_uring_cqe *cqe) {
+}
 
 static int ioring_get_cqe(struct ioring_data *d, unsigned int max,
 			  struct aio_t **paio)
@@ -30,6 +34,12 @@ static int ioring_get_cqe(struct ioring_data *d, unsigned int max,
   io_uring_for_each_cqe(ring, head, cqe) {
     struct aio_t *io = (struct aio_t *)(uintptr_t) io_uring_cqe_get_data(cqe);
     io->rval = cqe->res;
+
+    if (d->use_append) {
+      if (io->iocb.aio_lio_opcode == IO_CMD_PWRITEV) {
+        post_process_append(io, cqe);
+      }
+    }
 
     paio[nr++] = io;
 
@@ -50,6 +60,11 @@ static int find_fixed_fd(struct ioring_data *d, int real_fd)
   return it->second;
 }
 
+static void create_append_command(io_uring_sqe *sqe, int fd, aio_t *io) {
+  io_uring_prep_writev(sqe, fd, &io->iov[0],
+    io->iov.size(), io->offset);
+}
+
 static void init_sqe(struct ioring_data *d, struct io_uring_sqe *sqe,
 		     struct aio_t *io)
 {
@@ -57,9 +72,14 @@ static void init_sqe(struct ioring_data *d, struct io_uring_sqe *sqe,
 
   ceph_assert(fixed_fd != -1);
 
-  if (io->iocb.aio_lio_opcode == IO_CMD_PWRITEV)
-    io_uring_prep_writev(sqe, fixed_fd, &io->iov[0],
-			 io->iov.size(), io->offset);
+  if (io->iocb.aio_lio_opcode == IO_CMD_PWRITEV) {
+    if (d->use_append) {
+      create_append_command(sqe, fixed_fd, io);
+    } else {
+      io_uring_prep_writev(sqe, fixed_fd, &io->iov[0],
+        io->iov.size(), io->offset);
+    }
+  }
   else if (io->iocb.aio_lio_opcode == IO_CMD_PREADV)
     io_uring_prep_readv(sqe, fixed_fd, &io->iov[0],
 			io->iov.size(), io->offset);
@@ -118,12 +138,13 @@ ioring_queue_t::~ioring_queue_t()
 {
 }
 
-int ioring_queue_t::init(std::vector<int> &fds)
+int ioring_queue_t::init(std::vector<int> &fds, bool use_append)
 {
   unsigned flags = 0;
 
   pthread_mutex_init(&d->cq_mutex, NULL);
   pthread_mutex_init(&d->sq_mutex, NULL);
+  d->use_append = use_append;
 
   if (hipri)
     flags |= IORING_SETUP_IOPOLL;
