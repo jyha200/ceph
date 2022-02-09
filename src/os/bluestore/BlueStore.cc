@@ -12059,6 +12059,7 @@ void BlueStore::_txc_update_store_statfs(TransContext *txc)
   } 
   txc->statfs_delta.reset();
 }
+
 void BlueStore::txc_aio_finish(void *p) {
   TransContext* txc = static_cast<TransContext*>(p);
   if (txc->post_write) {
@@ -12070,6 +12071,13 @@ void BlueStore::txc_aio_finish(void *p) {
       uint64_t end = post_wctx.offset + post_wctx.length;
       auto dirty_end = end;
       auto o = post_wctx.onode;
+      for (auto& wi : wctx.writes) {
+        auto& dblob = wi.b->dirty_blob();
+        auto b_off = dblob.post_write_b_off;
+        auto final_length = dblob.post_write_length;
+        dblob.allocated(b_off, final_length, dblob.post_write_extents);
+        ceph_assert(dblob.has_csum() == false);
+      }
 
       _wctx_finish(txc, c, o, &wctx);
       if (end > o->onode.size) {
@@ -15112,6 +15120,13 @@ int BlueStore::_do_alloc_write(
     }
     for (auto& p : extents) {
       txc->allocated.insert(p.offset, p.length);
+      if (bdev->is_smr()) {
+        dblob.post_write_extents.push_back(p);
+      }
+    }
+    if (bdev->is_smr()) {
+      dblob.post_write_b_off = p2align(b_off, min_alloc_size);
+      dblob.post_write_length = final_length;
     }
     dblob.allocated(p2align(b_off, min_alloc_size), final_length, extents);
 

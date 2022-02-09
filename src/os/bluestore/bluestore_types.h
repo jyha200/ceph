@@ -455,6 +455,11 @@ public:
 
   ceph::buffer::ptr csum_data;                ///< opaque std::vector of csum data
 
+  uint32_t post_write_b_off = 0;
+  uint32_t post_write_length = 0;
+  bufferlist* post_write_bufferlist = NULL;
+  PExtentVector post_write_extents;
+
   bluestore_blob_t(uint32_t f = 0) : flags(f) {}
 
   const PExtentVector& get_extents() const {

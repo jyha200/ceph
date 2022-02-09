@@ -737,7 +737,7 @@ EOF
         bluestore prefer deferred size = 0
         bluestore prefer deferred size hdd = 0
         bluestore prefer deferred size ssd = 0
-        ;bluestore allocator = zoned
+        bluestore csum type = none
 				bluestore cns path = /dev/nvme2n1"
         fi
         if [ "$io_uring_enabled" -eq 1 ]; then
