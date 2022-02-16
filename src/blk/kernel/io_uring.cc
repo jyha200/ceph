@@ -6,10 +6,15 @@
 #if defined(HAVE_LIBURING)
 
 #include "liburing.h"
+
 #include <sys/epoll.h>
+#include <linux/nvme_ioctl.h>
 
 using std::list;
 using std::make_unique;
+
+// TODO Get block size from device
+static const size_t BLK_SIZE = 4096;
 
 struct ioring_data {
   struct io_uring io_uring;
@@ -19,6 +24,52 @@ struct ioring_data {
   std::map<int, int> fixed_fds_map;
   bool use_append = false;
 };
+
+struct block_uring_cmd {
+  __u32   ioctl_cmd;
+  __u32   unused1;
+  __u64   unused2[4];
+};
+
+struct nvme_user_io_t {
+  uint32_t cdw00_09[10];
+  uint64_t slba;
+  uint32_t nlb  : 16;
+  uint32_t rsvd :  4;
+  uint32_t dtype  :  4;
+  uint32_t rsvd2  :  2;
+  uint32_t prinfo :  4;
+  uint32_t fua  :  1;
+  uint32_t lr :  1;
+  uint32_t cdw13_15[3];
+};
+
+struct nvme_io_command_t {
+  union {
+#ifdef NVME_IOCTL_IO64_CMD
+    nvme_passthru_cmd64 common;
+#else
+    nvme_passthru_cmd common;
+#endif
+    nvme_user_io_t rw;
+    uint8_t raw[64];
+  };
+
+  enum class opcode {
+    FLUSH = 0x0,
+    WRITE = 0x1,
+    READ = 0x2,
+    APPEND = 0x7D,
+  };
+};
+
+struct uring_priv_t {
+  nvme_io_command_t io_cmd = {0,};
+  aio_t* aio;
+};
+
+// TODO replace self definition to that of liburing library
+static const uint32_t IORING_OP_URING_CMD = 40;
 
 static void post_process_append(aio_t *io, io_uring_cqe *cqe) {
 }
@@ -32,15 +83,20 @@ static int ioring_get_cqe(struct ioring_data *d, unsigned int max,
   unsigned nr = 0;
   unsigned head;
   io_uring_for_each_cqe(ring, head, cqe) {
-    struct aio_t *io = (struct aio_t *)(uintptr_t) io_uring_cqe_get_data(cqe);
-    io->rval = cqe->res;
-
+    struct aio_t *io = NULL;
     if (d->use_append) {
+      uring_priv_t *uring_priv = (uring_priv_t *)(uintptr_t) io_uring_cqe_get_data(cqe);
+      io = uring_priv->aio;
       if (io->iocb.aio_lio_opcode == IO_CMD_PWRITEV) {
         post_process_append(io, cqe);
       }
+      cqe->res = io->length;
+      delete uring_priv;
+    } else {
+      io = (struct aio_t *)(uintptr_t) io_uring_cqe_get_data(cqe);
     }
 
+    io->rval = cqe->res;
     paio[nr++] = io;
 
     if (nr == max)
@@ -60,9 +116,88 @@ static int find_fixed_fd(struct ioring_data *d, int real_fd)
   return it->second;
 }
 
-static void create_append_command(io_uring_sqe *sqe, int fd, aio_t *io) {
-  io_uring_prep_writev(sqe, fd, &io->iov[0],
-    io->iov.size(), io->offset);
+static void create_passthrough_command(
+  io_uring_sqe *sqe,
+  int fd,
+  uring_priv_t *uring_priv)
+{
+  nvme_io_command_t *io_cmd = &uring_priv->io_cmd;
+  sqe->opcode = IORING_OP_URING_CMD;
+  sqe->addr = 4;
+  sqe->len = io_cmd->common.data_len;
+  sqe->off = reinterpret_cast<uint64_t>(io_cmd);
+  sqe->flags = 0;
+  sqe->ioprio = 0;
+  sqe->user_data = reinterpret_cast<uint64_t>(uring_priv);
+  sqe->rw_flags = 0;
+  sqe->__pad2[0] = 0;
+  sqe->__pad2[1] = 0;
+  sqe->__pad2[2] = 0;
+
+  struct block_uring_cmd  *blk_cmd =
+    reinterpret_cast<block_uring_cmd *>(&sqe->len);
+
+#ifdef NVME_IOCTL_IO64_CMD
+  blk_cmd->ioctl_cmd = NVME_IOCTL_IO64_CMD;
+#else
+  blk_cmd->ioctl_cmd = NVME_IOCTL_IO_CMD;
+#endif
+  blk_cmd->unused2[0] = reinterpret_cast<uint64_t>(uring_priv);
+}
+
+static void create_io_command(
+  nvme_io_command_t *io_cmd,
+  nvme_io_command_t::opcode opcode,
+  uint64_t offset,
+  uint64_t length,
+  void* buf)
+{
+  io_cmd->common.opcode = static_cast<uint8_t>(opcode);
+  // TODO need to set real nsid
+  io_cmd->common.nsid = 1;
+  io_cmd->common.addr = reinterpret_cast<uint64_t>(buf);
+  io_cmd->common.data_len = length;
+  io_cmd->rw.slba = offset / BLK_SIZE;
+  io_cmd->rw.nlb = length / BLK_SIZE - 1;
+}
+
+static void create_read_command(
+  io_uring_sqe *sqe,
+  int fd,
+  aio_t *io,
+  uring_priv_t *uring_priv)
+{
+  // No vector support for read
+  ceph_assert(io->iov.size() == 1);
+  create_io_command(
+    &uring_priv->io_cmd,
+    nvme_io_command_t::opcode::READ,
+    io->offset,
+    io->length,
+    io->iov[0].iov_base);
+
+  create_passthrough_command(sqe, fd, uring_priv);
+}
+
+static void create_append_command(
+  io_uring_sqe *sqe,
+  int fd,
+  aio_t *io,
+  uring_priv_t *uring_priv)
+{
+  // No vector support for append
+  ceph_assert(io->iov.size() == 1);
+
+  // TODO replace write to append
+  // TODO should be zone starting offset
+  create_io_command(
+    &uring_priv->io_cmd,
+    nvme_io_command_t::opcode::WRITE,
+    io->offset,
+    io->length,
+    io->iov[0].iov_base);
+
+  create_passthrough_command(sqe, fd, uring_priv);
 }
 
 static void init_sqe(struct ioring_data *d, struct io_uring_sqe *sqe,
@@ -71,22 +206,32 @@ static void init_sqe(struct ioring_data *d, struct io_uring_sqe *sqe,
   int fixed_fd = find_fixed_fd(d, io->fd);
 
   ceph_assert(fixed_fd != -1);
+  void *priv = io;
 
-  if (io->iocb.aio_lio_opcode == IO_CMD_PWRITEV) {
-    if (d->use_append) {
-      create_append_command(sqe, fixed_fd, io);
+  if (d->use_append) {
+    uring_priv_t* uring_priv = new uring_priv_t;
+    uring_priv->aio = io;
+    priv = uring_priv;
+    if (io->iocb.aio_lio_opcode == IO_CMD_PWRITEV) {
+      create_append_command(sqe, fixed_fd, io, uring_priv);
+    } else if (io->iocb.aio_lio_opcode == IO_CMD_PREADV) {
+      create_read_command(sqe, fixed_fd, io, uring_priv);
     } else {
+      ceph_assert(0);
+    }
+  } else {
+    if (io->iocb.aio_lio_opcode == IO_CMD_PWRITEV) {
       io_uring_prep_writev(sqe, fixed_fd, &io->iov[0],
         io->iov.size(), io->offset);
     }
+    else if (io->iocb.aio_lio_opcode == IO_CMD_PREADV)
+      io_uring_prep_readv(sqe, fixed_fd, &io->iov[0],
+        io->iov.size(), io->offset);
+    else
+      ceph_assert(0);
   }
-  else if (io->iocb.aio_lio_opcode == IO_CMD_PREADV)
-    io_uring_prep_readv(sqe, fixed_fd, &io->iov[0],
-			io->iov.size(), io->offset);
-  else
-    ceph_assert(0);
 
-  io_uring_sqe_set_data(sqe, io);
+  io_uring_sqe_set_data(sqe, priv);
   io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
 }
 

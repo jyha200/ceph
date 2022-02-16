@@ -30,11 +30,13 @@
 class KernelDevice : public BlockDevice {
 protected:
   std::string path;
+  std::string ng_path;
   std::unique_ptr<io_queue_t> io_queue;
 private:
-  std::vector<int> fd_directs, fd_buffereds;
+  std::vector<int> fd_directs, fd_buffereds, fd_ngs;
   bool enable_wrt = true;
   bool aio, dio;
+  bool io_to_ng = false;
 
   int vdo_fd = -1;      ///< fd for vdo sysfs directory
   std::string vdo_name;
@@ -110,7 +112,7 @@ private:
   void debug_aio_unlink(aio_t& aio);
 
   void _detect_vdo();
-  int choose_fd(bool buffered, int write_hint) const;
+  int choose_fd(bool buffered, int write_hint, bool aio = false) const;
 
 public:
   KernelDevice(CephContext* cct, aio_callback_t cb, void *cbpriv, aio_callback_t d_cb, void *d_cbpriv);

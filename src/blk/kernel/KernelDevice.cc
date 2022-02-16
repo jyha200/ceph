@@ -66,6 +66,7 @@ KernelDevice::KernelDevice(CephContext* cct, aio_callback_t cb, void *cbpriv, ai
 {
   fd_directs.resize(WRITE_LIFE_MAX, -1);
   fd_buffereds.resize(WRITE_LIFE_MAX, -1);
+  fd_ngs.resize(WRITE_LIFE_MAX, -1);
 
   bool use_ioring = cct->_conf.get_val<bool>("bdev_ioring");
   unsigned int iodepth = cct->_conf->bdev_aio_max_queue_depth;
@@ -126,6 +127,11 @@ int KernelDevice::open(const string& p)
   int r = 0, i = 0;
   dout(1) << __func__ << " path " << path << dendl;
 
+  if (is_smr() && cct->_conf->contains("bluestore_zns_ng_path")) {
+    io_to_ng = true;
+    ng_path = cct->_conf->bluestore_zns_ng_path;
+    dout(1) << __func__ << " io to ng device" << ng_path << dendl;
+  }
   for (i = 0; i < WRITE_LIFE_MAX; i++) {
     int fd = ::open(path.c_str(), O_RDWR | O_DIRECT);
     if (fd  < 0) {
@@ -140,6 +146,15 @@ int KernelDevice::open(const string& p)
       break;
     }
     fd_buffereds[i] = fd;
+
+    if (io_to_ng) {
+      int fd_ng = ::open(ng_path.c_str(), O_RDWR);
+      if (fd < 0) {
+        r = -errno;
+        break;
+      }
+      fd_ngs[i] = fd_ng;
+    }
   }
 
   if (i != WRITE_LIFE_MAX) {
@@ -418,7 +433,7 @@ bool KernelDevice::get_thin_utilization(uint64_t *total, uint64_t *avail) const
   return get_vdo_utilization(vdo_fd, total, avail);
 }
 
-int KernelDevice::choose_fd(bool buffered, int write_hint) const
+int KernelDevice::choose_fd(bool buffered, int write_hint, bool aio) const
 {
 #if defined(F_SET_FILE_RW_HINT)
   if (!enable_wrt)
@@ -429,7 +444,11 @@ int KernelDevice::choose_fd(bool buffered, int write_hint) const
   // instead of trusting rocksdb to set write_hint.
   write_hint = WRITE_LIFE_NOT_SET;
 #endif
-  return buffered ? fd_buffereds[write_hint] : fd_directs[write_hint];
+  if (aio && io_to_ng) {
+    return buffered ? fd_buffereds[write_hint] : fd_ngs[write_hint];
+  } else {
+    return buffered ? fd_buffereds[write_hint] : fd_directs[write_hint];
+  }
 }
 
 int KernelDevice::flush()
@@ -480,7 +499,13 @@ int KernelDevice::_aio_start()
 {
   if (aio) {
     dout(10) << __func__ << dendl;
-    int r = io_queue->init(fd_directs, is_smr());
+    int r;
+    if (io_to_ng) {
+      dout(1) << __func__ << " init queue with fd_ngs" << dendl;
+      r = io_queue->init(fd_ngs, true);
+    } else {
+      r = io_queue->init(fd_directs, false);
+    }
     if (r < 0) {
       if (r == -EAGAIN) {
 	derr << __func__ << " io_setup(2) failed with EAGAIN; "
@@ -970,7 +995,7 @@ int KernelDevice::aio_write(
 	   << dendl;
       // generate a real io so that aio_wait behaves properly, but make it
       // a read instead of write, and toss the result.
-      ioc->pending_aios.push_back(aio_t(ioc, choose_fd(false, write_hint)));
+      ioc->pending_aios.push_back(aio_t(ioc, choose_fd(false, write_hint, true)));
       ++ioc->num_pending;
       auto& aio = ioc->pending_aios.back();
       aio.bl.push_back(
@@ -981,7 +1006,7 @@ int KernelDevice::aio_write(
     } else {
       if (bl.length() <= RW_IO_MAX) {
 	// fast path (non-huge write)
-	ioc->pending_aios.push_back(aio_t(ioc, choose_fd(false, write_hint)));
+	ioc->pending_aios.push_back(aio_t(ioc, choose_fd(false, write_hint, true)));
 	++ioc->num_pending;
 	auto& aio = ioc->pending_aios.back();
 	bl.prepare_iov(&aio.iov);
@@ -1001,7 +1026,7 @@ int KernelDevice::aio_write(
 	    tmp.substr_of(bl, prev_len, bl.length() - prev_len);
 	  }
 	  auto len = tmp.length();
-	  ioc->pending_aios.push_back(aio_t(ioc, choose_fd(false, write_hint)));
+	  ioc->pending_aios.push_back(aio_t(ioc, choose_fd(false, write_hint, true)));
 	  ++ioc->num_pending;
 	  auto& aio = ioc->pending_aios.back();
 	  tmp.prepare_iov(&aio.iov);
@@ -1105,7 +1130,11 @@ int KernelDevice::aio_read(
   if (aio && dio) {
     ceph_assert(is_valid_io(off, len));
     _aio_log_start(ioc, off, len);
-    ioc->pending_aios.push_back(aio_t(ioc, fd_directs[WRITE_LIFE_NOT_SET]));
+    if (io_to_ng) {
+      ioc->pending_aios.push_back(aio_t(ioc, fd_ngs[WRITE_LIFE_NOT_SET]));
+    } else {
+      ioc->pending_aios.push_back(aio_t(ioc, fd_directs[WRITE_LIFE_NOT_SET]));
+    }
     ++ioc->num_pending;
     aio_t& aio = ioc->pending_aios.back();
     aio.bl.push_back(

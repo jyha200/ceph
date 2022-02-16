@@ -21,6 +21,7 @@ extern "C" {
 #include "common/errno.h"
 #include "common/blkdev.h"
 #include "os/bluestore/BlueStore.h"
+#include "blk/kernel/io_uring.h"
 
 #define dout_context cct
 #define dout_subsys ceph_subsys_bdev
@@ -82,8 +83,10 @@ int HMSMRDevice::_post_open()
 {
   dout(10) << __func__ << dendl;
   zbd_info info;
+
   zbd_fd = zbd_open(path.c_str(), O_RDWR | O_DIRECT | O_LARGEFILE, &info);
-  zbd_fd2 = ::open(path.c_str(), O_RDWR | O_DIRECT | O_LARGEFILE);
+  legacy_fd = ::open(path.c_str(), O_RDWR | O_DIRECT | O_LARGEFILE);
+
   int r;
   if (zbd_fd < 0) {
     r = errno;
@@ -159,7 +162,7 @@ void HMSMRDevice::reset_zone(uint64_t zone)
 {
   dout(10) << __func__ << " zone 0x" << std::hex << zone << std::dec << dendl;
   blk_zone_range range = {.sector = zone * zone_size / 512, .nr_sectors = zone_size / 512};
-  if (ioctl(zbd_fd2, BLKRESETZONE, &range) < 0) {
+  if (ioctl(legacy_fd, BLKRESETZONE, &range) < 0) {
     derr << __func__ << " resetting zone failed for zone 0x" << std::hex
       << zone << std::dec << dendl;
     ceph_abort("zbd_reset_zones failed");
@@ -215,7 +218,7 @@ void HMSMRDevice::do_aio_submit(uint64_t zone, bool completed) {
   std::lock_guard lock(pending_ios[zone].lock);
   if (completed) {
     auto aio = pending_ios[zone].aios.front();
-    dout(10) << __func__ << " completed " <<  aio <<  dendl;
+    dout(10) << __func__ << " completed offset " <<  aio.offset << " length " << aio.length <<  dendl;
     pending_ios[zone].aios.pop_front();
     pending_ios[zone].running = false;
   } else {

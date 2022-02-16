@@ -738,6 +738,8 @@ EOF
         bluestore prefer deferred size hdd = 0
         bluestore prefer deferred size ssd = 0
         bluestore csum type = none
+        bluestore zns ng path = /dev/ng0n1
+        bdev ioring = true
 				bluestore cns path = /dev/nvme2n1"
         fi
         if [ "$io_uring_enabled" -eq 1 ]; then

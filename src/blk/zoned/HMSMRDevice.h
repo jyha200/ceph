@@ -30,7 +30,7 @@
 
 class HMSMRDevice final : public KernelDevice {
   int zbd_fd = -1;	///< fd for the zoned block device
-  int zbd_fd2 = -1;	///< fd for the zoned block device
+  int legacy_fd = -1;	///< fd for the zoned block device
   int cns_fd = -1;
   size_t nr_zones = -1;
   std::recursive_mutex write_lock;
