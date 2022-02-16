@@ -66,7 +66,6 @@ public:
   }
 	void aio_submit(IOContext* ioc) override;
 	void do_aio_submit(uint64_t zone, bool completed);
-  void post_write(uint64_t zone);
 
 	bool supported_bdev_label() override { return false; }
 };

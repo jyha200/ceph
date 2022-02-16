@@ -12064,7 +12064,8 @@ void BlueStore::txc_aio_finish(void *p) {
   TransContext* txc = static_cast<TransContext*>(p);
   if (txc->post_write) {
     auto c = txc->coll;
-    //std::unique_lock l(c->lock);
+    IOContext* ioc = &txc->ioc;
+    auto aio_iter = ioc->pending_aios.begin();
     for (auto& post_wctx : txc->post_wctxs) {
       auto& wctx = post_wctx.wctx;
       auto dirty_start = post_wctx.offset;
@@ -12075,7 +12076,17 @@ void BlueStore::txc_aio_finish(void *p) {
         auto& dblob = wi.b->dirty_blob();
         auto b_off = dblob.post_write_b_off;
         auto final_length = dblob.post_write_length;
-        dblob.allocated(b_off, final_length, dblob.post_write_extents);
+        PExtentVector extents;
+        auto remain = final_length;
+        while (remain > 0) {
+          auto& cur_aio = *aio_iter;
+          extents.push_back(
+              bluestore_pextent_t(cur_aio.post_offset, cur_aio.length));
+          ceph_assert(remain >= cur_aio.length);
+          remain -= cur_aio.length;
+          aio_iter++;
+        }
+        dblob.allocated(b_off, final_length, extents);
         ceph_assert(dblob.has_csum() == false);
       }
 
@@ -15120,9 +15131,6 @@ int BlueStore::_do_alloc_write(
     }
     for (auto& p : extents) {
       txc->allocated.insert(p.offset, p.length);
-      if (bdev->is_smr()) {
-        dblob.post_write_extents.push_back(p);
-      }
     }
     if (bdev->is_smr()) {
       dblob.post_write_b_off = p2align(b_off, min_alloc_size);

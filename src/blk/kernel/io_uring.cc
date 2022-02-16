@@ -71,7 +71,9 @@ struct uring_priv_t {
 // TODO replace self definition to that of liburing library
 static const uint32_t IORING_OP_URING_CMD = 40;
 
-static void post_process_append(aio_t *io, io_uring_cqe *cqe) {
+static void post_process_append(aio_t *io, uring_priv_t *uring_priv) {
+  ceph_assert(io->origin != NULL);
+  io->origin->post_offset = uring_priv->io_cmd.common.result * BLK_SIZE;
 }
 
 static int ioring_get_cqe(struct ioring_data *d, unsigned int max,
@@ -88,7 +90,7 @@ static int ioring_get_cqe(struct ioring_data *d, unsigned int max,
       uring_priv_t *uring_priv = (uring_priv_t *)(uintptr_t) io_uring_cqe_get_data(cqe);
       io = uring_priv->aio;
       if (io->iocb.aio_lio_opcode == IO_CMD_PWRITEV) {
-        post_process_append(io, cqe);
+        post_process_append(io, uring_priv);
       }
       cqe->res = io->length;
       delete uring_priv;
@@ -188,11 +190,9 @@ static void create_append_command(
   // No vector support for append
   ceph_assert(io->iov.size() == 1);
 
-  // TODO replace write to append
-  // TODO should be zone starting offset
   create_io_command(
     &uring_priv->io_cmd,
-    nvme_io_command_t::opcode::WRITE,
+    nvme_io_command_t::opcode::APPEND,
     io->offset,
     io->length,
     io->iov[0].iov_base);

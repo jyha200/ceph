@@ -51,12 +51,16 @@ static void hmsmr_cb(void* priv, void* priv2)
   IOContext* ioc = static_cast<IOContext*>(aio->priv);
   HMSMRDevice* bdev = casted_priv->bdev;
 
-  uint64_t completed_zone = get_zone(aio->offset, bdev->get_zone_size());
-  bdev->do_aio_submit(completed_zone, true);
+  if (aio->iocb.aio_lio_opcode == IO_CMD_PWRITEV) {
+    uint64_t zone = get_zone(aio->offset, bdev->get_zone_size());
+    uint64_t post_zone = get_zone(aio->origin->post_offset, bdev->get_zone_size());
+    ceph_assert(zone == post_zone);
+    bdev->do_aio_submit(zone, true);
+  }
 
   if (ioc->num_pending == 0 && ioc->num_running == 0) {
-    ioc->pending_aios.clear();
     casted_priv->cb(casted_priv->cbpriv, ioc->priv);
+    ioc->pending_aios.clear();
   }
 }
 
@@ -72,11 +76,6 @@ HMSMRDevice::HMSMRDevice(CephContext* cct,
 bool HMSMRDevice::support(const std::string& path)
 {
   return zbd_device_is_zoned(path.c_str()) == 1;
-}
-
-void HMSMRDevice::post_write(uint64_t zone) {
-  std::lock_guard lock(pending_ios[zone].lock);
-  pending_ios[zone].aios.pop_front();
 }
 
 int HMSMRDevice::_post_open()
@@ -199,7 +198,9 @@ void HMSMRDevice::aio_submit(IOContext* ioc) {
       uint64_t zone = get_zone(pending_aio->offset, zone_size);
       pending_aio->priv = static_cast<IOContext*>(ioc);
       std::lock_guard lock(pending_ios[zone].lock);
-      pending_ios[zone].aios.push_back(*pending_aio);
+      aio_t aio_to_push = *pending_aio;
+      aio_to_push.origin = &*pending_aio;
+      pending_ios[zone].aios.push_back(aio_to_push);
       requested_zones.push_back(zone);
     }
     for (auto zone = requested_zones.begin();
@@ -233,6 +234,8 @@ void HMSMRDevice::do_aio_submit(uint64_t zone, bool completed) {
   }
 
   auto pending_aio = pending_ios[zone].aios.begin();
+  dout(10) << __func__ << " offset " << pending_aio->offset << " to zone aligned " << zone * zone_size << dendl;
+  pending_aio->offset = zone * zone_size;
   auto ioc = static_cast<IOContext*>(pending_aio->priv);
   dout(10) << __func__ << " target pending ioc" <<  ioc <<  dendl;
 
