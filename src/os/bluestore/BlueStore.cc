@@ -13614,7 +13614,7 @@ int BlueStore::queue_transactions(
   // support matures in the kernel.  For more information please see:
   // https://www.usenix.org/conference/vault20/presentation/bjorling
   if (bdev->is_smr()) {
-    atomic_alloc_and_submit_lock.lock();
+//    atomic_alloc_and_submit_lock.lock();
   }
 
   // prepare
@@ -13684,7 +13684,7 @@ int BlueStore::queue_transactions(
   _txc_state_proc(txc);
 
   if (bdev->is_smr()) {
-    atomic_alloc_and_submit_lock.unlock();
+  //  atomic_alloc_and_submit_lock.unlock();
   }
 
   // we're immediately readable (unlike FileStore)
