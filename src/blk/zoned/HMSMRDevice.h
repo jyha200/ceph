@@ -48,6 +48,7 @@ public:
   HMSMRDevice(CephContext* cct, aio_callback_t cb, void *cbpriv,
               aio_callback_t d_cb, void *d_cbpriv);
 
+  void post_write(aio_t* aio);
   static bool support(const std::string& path);
 
   // open/close hooks for libzbd

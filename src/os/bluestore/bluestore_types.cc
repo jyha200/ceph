@@ -835,7 +835,7 @@ void bluestore_blob_t::allocated(uint32_t b_off, uint32_t length, const PExtentV
 
     while (true) {
       ceph_assert(end_it != extents.end());
-//      ceph_assert(end_it->is_valid());
+      //ceph_assert(end_it->is_valid());
       if (cur_offs + end_it->length >= end_off) {
 	break;
       }

@@ -45,7 +45,11 @@ ZonedAllocator::ZonedAllocator(CephContext* cct,
 		 << dendl;
   ceph_assert(size % zone_size == 0);
 
- zone_states.resize(num_zones);
+  zone_states = new zone_state_internal_t[num_zones];
+  if (cct->_conf->contains("bluestore_zns_ng_path")) {
+    sync_allocation  = false;
+  }
+
   for (uint64_t i = 0 ; i < max_open_zone ; i++) {
     active_zones[i] = i + first_seq_zone_num;
   }
@@ -54,12 +58,12 @@ ZonedAllocator::ZonedAllocator(CephContext* cct,
 
 ZonedAllocator::~ZonedAllocator()
 {
+  delete zone_states;
 }
 
-void ZonedAllocator::select_other_zone(uint64_t index) {
-  uint64_t current_zone = active_zones[index];
-  uint64_t new_zone = (current_zone + max_open_zone) % num_zones;
-  active_zones[index] = new_zone;
+void ZonedAllocator::select_other_zone(uint64_t zone, uint64_t index) {
+  uint64_t new_zone = (zone + max_open_zone) % num_zones;
+  active_zones[index].compare_exchange_strong(zone, new_zone);
 }
 
 int64_t ZonedAllocator::allocate(
@@ -69,54 +73,88 @@ int64_t ZonedAllocator::allocate(
   int64_t hint,
   PExtentVector *extents)
 {
-  std::lock_guard l(lock);
-
   ceph_assert(want_size % 4096 == 0);
 
   ldout(cct, 10) << " trying to allocate 0x"
 		 << std::hex << want_size << std::dec << dendl;
   uint64_t remaining_size = want_size;
-  while(remaining_size > 0) {
-    uint64_t target_idx = (last_visited_idx + 1) % max_open_zone;
-    uint64_t zone_num = active_zones[target_idx];
-    if (zone_num == cleaning_zone) {
-      select_other_zone(target_idx);
+  if (sync_allocation) {
+    std::lock_guard l(lock);
+    while(remaining_size > 0) {
+      uint64_t target_idx = (last_visited_idx + 1) % max_open_zone;
+      uint64_t zone_num = active_zones[target_idx];
+      if (zone_num == cleaning_zone) {
+        select_other_zone(zone_num, target_idx);
+        last_visited_idx++;
+        continue;
+      }
+      uint64_t target_size = remaining_size > interleaving_unit ? interleaving_unit : remaining_size;
+      if (!fits(target_size, zone_num)) {
+        target_size = get_remaining_space(zone_num);
+      }
+      uint64_t offset = get_offset(zone_num);
+      increment_write_pointer(zone_num, target_size);
+      num_sequential_free -= target_size;
+      if (get_remaining_space(zone_num) == 0) {
+        select_other_zone(zone_num, target_idx);
+      }
+      extents->emplace_back(bluestore_pextent_t(offset, target_size));
+      remaining_size -= target_size;
       last_visited_idx++;
-      continue;
     }
-    uint64_t target_size = remaining_size > interleaving_unit ? interleaving_unit : remaining_size;
-    if (!fits(target_size, zone_num)) {
-      target_size = get_remaining_space(zone_num);
-    }
-    uint64_t offset = get_offset(zone_num);
-    increment_write_pointer(zone_num, target_size);
-    num_sequential_free -= target_size;
-    if (get_remaining_space(zone_num) == 0) {
-      select_other_zone(target_idx);
-    }
+  } else {
+    while(remaining_size > 0) {
+      uint64_t target_idx = (++last_visited_idx) % max_open_zone;
+      uint64_t zone_num = active_zones[target_idx];
+      if (zone_num == cleaning_zone) {
+        select_other_zone(zone_num, target_idx);
+        continue;
+      }
+      uint64_t target_size = remaining_size > interleaving_unit ? interleaving_unit : remaining_size;
+      uint64_t write_pointer = increase_and_get_write_pointer(zone_num, target_size);
+      if (write_pointer + target_size >= zone_size) {
+        select_other_zone(zone_num, target_idx);
+      }
 
-    extents->emplace_back(bluestore_pextent_t(offset, target_size));
-    remaining_size -= target_size;
-    last_visited_idx++;
+      // No space allocated at zone
+      if (write_pointer >= zone_size) {
+        continue;
+      }
+
+      target_size = (zone_size - write_pointer) >= target_size ? target_size : zone_size - write_pointer;
+      uint64_t offset = write_pointer + zone_num * zone_size;
+      num_sequential_free -= target_size;
+      ldout(cct, 10) << __func__ << " zone " << zone_num << " offset " <<
+        offset / 1024 << " wp " << write_pointer / 1024 << dendl;
+
+      extents->emplace_back(bluestore_pextent_t(offset, target_size));
+      remaining_size -= target_size;
+    }
   }
   return want_size;
 }
 
 void ZonedAllocator::release(const interval_set<uint64_t>& release_set)
 {
-  std::lock_guard l(lock);
+  if (sync_allocation) {
+    lock.lock();
+  }
+  
   for (auto p = cbegin(release_set); p != cend(release_set); ++p) {
     auto offset = p.get_start();
     auto length = p.get_len();
     uint64_t zone_num = offset / zone_size;
     ldout(cct, 10) << " 0x" << std::hex << offset << "~" << length
-		   << " from zone 0x" << zone_num << std::dec << dendl;
+      << " from zone 0x" << zone_num << std::dec << dendl;
     uint64_t num_dead = std::min(zone_size - offset % zone_size, length);
     for ( ; length; ++zone_num) {
       increment_num_dead_bytes(zone_num, num_dead);
       length -= num_dead;
       num_dead = std::min(zone_size, length);
     }
+  }
+  if (sync_allocation) {
+    lock.unlock();
   }
 }
 
@@ -142,7 +180,10 @@ void ZonedAllocator::init_from_zone_pointers(
   // this is called once, based on the device's zone pointers
   std::lock_guard l(lock);
   ldout(cct, 10) << dendl;
-  zone_states = std::move(_zone_states);
+  for (uint32_t i = 0 ; i < _zone_states.size() ; i++) {
+    zone_states[i].num_dead_bytes = _zone_states[i].num_dead_bytes;
+    zone_states[i].write_pointer = _zone_states[i].write_pointer;
+  }
   num_sequential_free = 0;
   for (size_t i = first_seq_zone_num; i < num_zones; ++i) {
     num_sequential_free += zone_size - (zone_states[i].write_pointer % zone_size);

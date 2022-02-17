@@ -21,6 +21,34 @@
 #include "bluestore_types.h"
 #include "zoned_types.h"
 
+struct zone_state_internal_t {
+  atomic<uint64_t> num_dead_bytes = 0;
+  atomic<uint64_t> write_pointer = 0;
+  zone_state_internal_t() : num_dead_bytes(0), write_pointer(0)
+  {  
+  }
+
+  uint64_t get_write_pointer() const {
+    return write_pointer.load();
+  }
+  uint64_t increment_write_pointer(uint64_t num_bytes) {
+    return write_pointer.fetch_add(num_bytes);
+  }
+
+  void increment_num_dead_bytes(uint64_t num_bytes) {
+    num_dead_bytes += num_bytes;
+  }
+
+  uint64_t get_num_live_bytes() const {
+    return write_pointer - num_dead_bytes;
+  }
+
+  void reset() {
+    num_dead_bytes = 0;
+    write_pointer = 0;
+  }
+};
+
 class ZonedAllocator : public Allocator {
   CephContext* cct;
 
@@ -38,18 +66,20 @@ class ZonedAllocator : public Allocator {
   uint64_t first_seq_zone_num;
   uint64_t starting_zone_num;
   uint64_t num_zones;
+  bool sync_allocation = true;
   std::atomic<uint32_t> cleaning_zone = -1;
-  std::vector<zone_state_t> zone_states;
+  //std::vector<zone_state_internal_t> zone_states;
+  zone_state_internal_t* zone_states;
 
   static const uint64_t max_open_zone = 256;
   static const uint64_t interleaving_unit = 128 * 1024;
-  uint64_t active_zones[max_open_zone];
-  uint64_t last_visited_idx;
+  std::atomic<uint64_t> active_zones[max_open_zone];
+  std::atomic<uint64_t> last_visited_idx = 0;
 
   inline uint64_t get_offset(uint64_t zone_num) const {
     return zone_num * zone_size + get_write_pointer(zone_num);
   }
-  void select_other_zone(uint64_t index);
+  void select_other_zone(uint64_t zone, uint64_t index);
 
 public:
   inline uint64_t get_write_pointer(uint64_t zone_num) const {
@@ -72,6 +102,9 @@ private:
     return want_size <= get_remaining_space(zone_num);
   }
 
+  inline uint64_t increase_and_get_write_pointer(uint64_t zone_num, uint64_t length) {
+    return zone_states[zone_num].increment_write_pointer(length);
+  }
 public:
   ZonedAllocator(CephContext* cct, int64_t size, int64_t block_size,
 		 int64_t _zone_size,

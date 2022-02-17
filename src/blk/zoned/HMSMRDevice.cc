@@ -57,6 +57,7 @@ static void hmsmr_cb(void* priv, void* priv2)
       bdev->do_aio_submit(zone, true);
     } else {
       uint64_t post_zone = get_zone(*aio->post_offset_ptr, bdev->get_zone_size());
+      bdev->post_write(aio);
       ceph_assert(zone == post_zone);
     }
   }
@@ -66,6 +67,15 @@ static void hmsmr_cb(void* priv, void* priv2)
     ioc->pending_aios.clear();
     ioc->post_addrs.clear();
   }
+}
+
+void HMSMRDevice::post_write(aio_t* aio) {
+  uint64_t zone = get_zone(aio->offset, get_zone_size());
+  uint64_t post_zone = get_zone(aio->origin->post_offset, get_zone_size());
+
+  dout(10) << __func__ << " zone " << zone << " post_zone " << post_zone
+    << " offset " << aio->offset << " post_offset " << aio->origin->post_offset
+    << dendl;
 }
 
 HMSMRDevice::HMSMRDevice(CephContext* cct,
