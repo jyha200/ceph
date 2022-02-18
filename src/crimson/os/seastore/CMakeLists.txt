@@ -53,6 +53,11 @@ if(WITH_ZNS)
     random_block_manager/zoned_nvme_device.cc)
 endif()
 
+if(WITH_LIBURING)
+  list(APPEND crimson-seastore_srcs
+    random_block_manager/io_uring_device.cc)
+endif()
+
 add_library(crimson-seastore STATIC
   ${crimson_seastore_srcs})
 
@@ -61,6 +66,10 @@ target_link_libraries(crimson-seastore
 if(WITH_ZNS)
   target_link_libraries(crimson-seastore
     Linux::ZNS)
+endif()
+
+if(WITH_LIBURING)
+  target_link_libraries(crimson-seastore uring::uring)
 endif()
 
 set_target_properties(crimson-seastore PROPERTIES
