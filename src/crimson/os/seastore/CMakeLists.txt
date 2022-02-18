@@ -49,6 +49,8 @@ if(WITH_ZNS)
   find_package(LinuxZNS REQUIRED)
   list(APPEND crimson_seastore_srcs
     segment_manager/zns.cc)
+  list(APPEND crimson_seastore_srcs
+    random_block_manager/zoned_nvme_device.cc)
 endif()
 
 add_library(crimson-seastore STATIC
