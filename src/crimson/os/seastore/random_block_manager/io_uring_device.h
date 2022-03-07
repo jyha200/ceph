@@ -65,6 +65,9 @@ public:
   nvme_command_ertr::future<uring_completion*> uring_pass_through_io(
     nvme_io_command_t& io_cmd);
 
+  virtual append_ertr::future<uint64_t> append(
+    uint32_t zone, bufferptr &bptr) { return seastar::make_ready_future<uint64_t>(0); };
+
 private:
   bool io_uring_supported() { return true; };
   static void _create_pass_through_command(

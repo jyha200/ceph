@@ -3,10 +3,10 @@
 
 #pragma once
 
-#include "nvmedevice.h"
+#include "io_uring_device.h"
 
 namespace crimson::os::seastore::nvme_device {
-class ZonedNVMeDevice : PosixNVMeDevice {
+class ZonedNVMeDevice : public IOUringNVMeDevice {
   size_t zone_size = 0;
   uint32_t nr_zones = 0;
   int fd;
@@ -15,21 +15,11 @@ public:
   ZonedNVMeDevice() {}
   ~ZonedNVMeDevice() = default;
 
-  open_ertr::future<> open(
-    const std::string &in_path,
-    seastar::open_flags mode) override;
-  seastar::future<> close() override;
+   append_ertr::future<uint64_t> append(
+   uint32_t zone, bufferptr &bptr) override;
 
-  void reset_zone(uint32_t zone);
-
-  /*
-   * Preferred management size
-   *
-   * For zoned storage, user should be aware of zone size. For example, segment
-   * should be sized and algined by zone size to write with consideration of
-   * zone's write sequence. Otherwise, for the write violating zone's write
-   * sequence, zoned storage returns write failure to user.
-   */
-   size_t get_zone_size() { return zone_size; }
+private:
+  nvme_io_command_t _create_append_cmd(uint32_t zone, bufferptr &bptr);
+   
 };
 }

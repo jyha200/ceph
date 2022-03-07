@@ -202,6 +202,7 @@ struct nvme_io_command_t {
   };
   static const uint8_t OPCODE_WRITE = 0x01;
   static const uint8_t OPCODE_READ = 0x02;
+  static const uint8_t OPCODE_APPEND = 0x7D;
 };
 
 struct uring_completion{
@@ -243,6 +244,9 @@ using nvme_command_ertr = crimson::errorator<
   crimson::ct_error::input_output_error>;
 
 using discard_ertr = crimson::errorator<
+  crimson::ct_error::input_output_error>;
+
+using append_ertr = crimson::errorator<
   crimson::ct_error::input_output_error>;
 
 struct io_context_t {
