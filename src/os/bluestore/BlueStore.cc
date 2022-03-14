@@ -1151,7 +1151,7 @@ struct LruOnodeCacheShard : public BlueStore::OnodeCacheShard {
   {
     if (new_size >= lru.size()) {
       return; // don't even try
-    } 
+    }
     uint64_t n = lru.size() - new_size;
     auto p = lru.end();
     ceph_assert(p != lru.begin());
@@ -12065,7 +12065,7 @@ void BlueStore::txc_aio_finish(void *p) {
   if (txc->post_write) {
     auto c = txc->coll;
     IOContext* ioc = &txc->ioc;
-    auto aio_iter = ioc->pending_aios.begin();
+    auto addr_iter = ioc->post_addrs.begin();
     for (auto& post_wctx : txc->post_wctxs) {
       auto& wctx = post_wctx.wctx;
       auto dirty_start = post_wctx.offset;
@@ -12079,12 +12079,12 @@ void BlueStore::txc_aio_finish(void *p) {
         PExtentVector extents;
         auto remain = final_length;
         while (remain > 0) {
-          auto& cur_aio = *aio_iter;
+          auto& cur_addr = *addr_iter;
           extents.push_back(
-              bluestore_pextent_t(cur_aio.post_offset, cur_aio.length));
-          ceph_assert(remain >= cur_aio.length);
-          remain -= cur_aio.length;
-          aio_iter++;
+              bluestore_pextent_t(cur_addr.offset, cur_addr.length));
+          ceph_assert(remain >= cur_addr.length);
+          remain -= cur_addr.length;
+          addr_iter++;
         }
         dblob.allocated(b_off, final_length, extents);
         ceph_assert(dblob.has_csum() == false);
@@ -13613,8 +13613,8 @@ int BlueStore::queue_transactions(
   // writes to the drive.  This is a temporary solution until ZONE APPEND
   // support matures in the kernel.  For more information please see:
   // https://www.usenix.org/conference/vault20/presentation/bjorling
-  if (bdev->is_smr()) {
-//    atomic_alloc_and_submit_lock.lock();
+  if (bdev->need_alloc_submit_sync()) {
+    atomic_alloc_and_submit_lock.lock();
   }
 
   // prepare
@@ -13683,8 +13683,8 @@ int BlueStore::queue_transactions(
   // execute (start)
   _txc_state_proc(txc);
 
-  if (bdev->is_smr()) {
-  //  atomic_alloc_and_submit_lock.unlock();
+  if (bdev->need_alloc_submit_sync()) {
+    atomic_alloc_and_submit_lock.unlock();
   }
 
   // we're immediately readable (unlike FileStore)
@@ -15580,8 +15580,9 @@ int BlueStore::_do_write(
 			  min_alloc_size);
   }
 
-  if (bdev->is_smr()) {
+  if (bdev->is_smr() && bdev->need_alloc_submit_sync() == false) {
     txc->post_write = true;
+    o->post_write = true;
     txc->post_wctxs.push_back({std::move(wctx), offset, length, o});
     txc->coll = c;
   } else {
@@ -17020,6 +17021,7 @@ void BlueStore::_apply_padding(uint64_t head_pad,
 void BlueStore::_record_onode(OnodeRef &o, KeyValueDB::Transaction &txn)
 {
   // finalize extent_map shards
+  std::string key(o->key.c_str(), o->key.size());
   o->extent_map.update(txn, false);
   if (o->extent_map.needs_reshard()) {
     o->extent_map.reshard(db, txn);
@@ -17062,7 +17064,7 @@ void BlueStore::_record_onode(OnodeRef &o, KeyValueDB::Transaction &txn)
 	    << dendl;
 
 
-  txn->set(PREFIX_OBJ, o->key.c_str(), o->key.size(), bl);
+  txn->set(PREFIX_OBJ, key, bl);
 }
 
 void BlueStore::_log_alerts(osd_alert_list_t& alerts)

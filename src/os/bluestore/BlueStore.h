@@ -1069,6 +1069,7 @@ public:
     std::atomic_int nref;  ///< reference count
     Collection *c;
     ghobject_t oid;
+    bool post_write = false;
 
     /// key under PREFIX_OBJ where we are stored
     mempool::bluestore_cache_meta::string key;

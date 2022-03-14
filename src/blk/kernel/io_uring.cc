@@ -9,6 +9,12 @@
 
 #include <sys/epoll.h>
 #include <linux/nvme_ioctl.h>
+#include "common/debug.h"
+
+#define dout_context cct
+#define dout_subsys ceph_subsys_bdev
+#undef dout_prefix
+#define dout_prefix *_dout << " uring_q "
 
 using std::list;
 using std::make_unique;
@@ -23,6 +29,7 @@ struct ioring_data {
   int epoll_fd = -1;
   std::map<int, int> fixed_fds_map;
   bool use_append = false;
+  CephContext* cct;
 };
 
 struct block_uring_cmd {
@@ -72,8 +79,8 @@ struct uring_priv_t {
 static const uint32_t IORING_OP_URING_CMD = 40;
 
 static void post_process_append(aio_t *io, uring_priv_t *uring_priv) {
-  ceph_assert(io->origin != NULL);
-  io->origin->post_offset = uring_priv->io_cmd.common.result * BLK_SIZE;
+  ceph_assert(io->post_offset_ptr != NULL);
+  io->post_offset_ptr[0] = uring_priv->io_cmd.common.result * BLK_SIZE;
 }
 
 static int ioring_get_cqe(struct ioring_data *d, unsigned int max,
@@ -271,12 +278,13 @@ static void build_fixed_fds_map(struct ioring_data *d,
   }
 }
 
-ioring_queue_t::ioring_queue_t(unsigned iodepth_, bool hipri_, bool sq_thread_) :
+ioring_queue_t::ioring_queue_t(unsigned iodepth_, bool hipri_, bool sq_thread_, CephContext* cct) :
   d(make_unique<ioring_data>()),
   iodepth(iodepth_),
   hipri(hipri_),
   sq_thread(sq_thread_)
 {
+  d->cct = cct;
 }
 
 ioring_queue_t::~ioring_queue_t()

@@ -74,7 +74,7 @@ KernelDevice::KernelDevice(CephContext* cct, aio_callback_t cb, void *cbpriv, ai
   if (use_ioring && ioring_queue_t::supported()) {
     bool use_ioring_hipri = cct->_conf.get_val<bool>("bdev_ioring_hipri");
     bool use_ioring_sqthread_poll = cct->_conf.get_val<bool>("bdev_ioring_sqthread_poll");
-    io_queue = std::make_unique<ioring_queue_t>(iodepth, use_ioring_hipri, use_ioring_sqthread_poll);
+    io_queue = std::make_unique<ioring_queue_t>(iodepth, use_ioring_hipri, use_ioring_sqthread_poll, cct);
   } else {
     static bool once;
     if (use_ioring && !once) {

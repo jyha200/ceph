@@ -21,7 +21,7 @@ struct ioring_queue_t final : public io_queue_t {
   // Returns true if arch is x86-64 and kernel supports io_uring
   static bool supported();
 
-  ioring_queue_t(unsigned iodepth_, bool hipri_, bool sq_thread_);
+  ioring_queue_t(unsigned iodepth_, bool hipri_, bool sq_thread_, CephContext* cct);
   ~ioring_queue_t() final;
 
   int init(std::vector<int> &fds, bool use_append) final;
