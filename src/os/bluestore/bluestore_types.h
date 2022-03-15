@@ -1039,7 +1039,7 @@ struct bluestore_onode_t {
     DENC_START(2, 1, p);
     denc_varint(v.nid, p);
     denc_varint(v.size, p);
-    denc(v.attrs, p);
+    //denc(v.attrs, p);
     denc(v.flags, p);
     denc(v.extent_map_shards, p);
     denc_varint(v.expected_object_size, p);
