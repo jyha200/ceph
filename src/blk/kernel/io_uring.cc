@@ -278,26 +278,37 @@ static void build_fixed_fds_map(struct ioring_data *d,
   }
 }
 
-ioring_queue_t::ioring_queue_t(unsigned iodepth_, bool hipri_, bool sq_thread_, CephContext* cct) :
-  d(make_unique<ioring_data>()),
+ioring_queue_t::ioring_queue_t(
+  unsigned iodepth_,
+  bool hipri_,
+  bool sq_thread_,
+  CephContext* cct) :
   iodepth(iodepth_),
   hipri(hipri_),
-  sq_thread(sq_thread_)
+  sq_thread(sq_thread_),
+  cct(cct)
 {
-  d->cct = cct;
 }
 
 ioring_queue_t::~ioring_queue_t()
 {
 }
 
-int ioring_queue_t::init(std::vector<int> &fds, bool use_append)
+void ioring_queue_t::enable_append()
 {
-  unsigned flags = 0;
+  use_append = true;
+  ring_count = cct->_conf->io_uring_ring_count;
+  ldout(cct, 1) << __func__ << " set ring_count " << ring_count <<  dendl;
+}
 
+int ioring_queue_t::init_ring(uint32_t i, std::vector<int> &fds)
+{
+  auto& d = datas[i];
+  unsigned flags = 0;
   pthread_mutex_init(&d->cq_mutex, NULL);
   pthread_mutex_init(&d->sq_mutex, NULL);
   d->use_append = use_append;
+  d->cct = cct;
 
   if (hipri)
     flags |= IORING_SETUP_IOPOLL;
@@ -339,23 +350,41 @@ close_ring_fd:
   io_uring_queue_exit(&d->io_uring);
 
   return ret;
+
+}
+
+int ioring_queue_t::init(std::vector<int> &fds)
+{
+  int ret = 0;
+  datas.resize(ring_count);
+
+  for (uint32_t i = 0 ; i < ring_count ; i++) {
+    datas[i] = std::make_unique<ioring_data>();
+    ret = init_ring(i, fds);
+    if (ret < 0) {
+      break;
+    }
+  }
+  return ret;
 }
 
 void ioring_queue_t::shutdown()
 {
-  d->fixed_fds_map.clear();
-  close(d->epoll_fd);
-  d->epoll_fd = -1;
-  io_uring_queue_exit(&d->io_uring);
+  for (uint32_t i = 0 ; i < ring_count ; i++) {
+    auto& d = datas[i];
+    d->fixed_fds_map.clear();
+    close(d->epoll_fd);
+    d->epoll_fd = -1;
+    io_uring_queue_exit(&d->io_uring);
+  }
 }
 
 int ioring_queue_t::submit_batch(aio_iter beg, aio_iter end,
                                  uint16_t aios_size, void *priv,
                                  int *retries)
 {
-  (void)aios_size;
-  (void)retries;
-
+  uint32_t ring_idx = get_ring_idx();
+  auto& d = datas[ring_idx];
   pthread_mutex_lock(&d->sq_mutex);
   int rc = ioring_queue(d.get(), priv, beg, end);
   pthread_mutex_unlock(&d->sq_mutex);
@@ -363,14 +392,19 @@ int ioring_queue_t::submit_batch(aio_iter beg, aio_iter end,
   return rc;
 }
 
-int ioring_queue_t::get_next_completed(int timeout_ms, aio_t **paio, int max)
+int ioring_queue_t::get_ring_next_completed(
+  int timeout_ms,
+  aio_t **paio,
+  int max,
+  uint32_t ring_idx)
 {
 get_cqe:
+  auto& d = datas[ring_idx];
   pthread_mutex_lock(&d->cq_mutex);
   int events = ioring_get_cqe(d.get(), max, paio);
   pthread_mutex_unlock(&d->cq_mutex);
 
-  if (events == 0) {
+  if (events == 0 && use_append == false) {
     struct epoll_event ev;
     int ret = TEMP_FAILURE_RETRY(epoll_wait(d->epoll_fd, &ev, 1, timeout_ms));
     if (ret < 0)
@@ -379,8 +413,51 @@ get_cqe:
       /* Time to reap */
       goto get_cqe;
   }
+  ceph_assert(events <= max);
+  
+  if (events > 0) {
+    ldout(cct, 20) << __func__ << " max " << max << " events " << events << dendl;
+  }
 
   return events;
+}
+
+int ioring_queue_t::get_next_completed(int timeout_ms, aio_t **paio, int max)
+{
+  int events = 0;
+  for (uint32_t i = 0 ; i < ring_count ; i++) {
+    if (events == max) {
+      break;
+    }
+    events += get_ring_next_completed(
+      timeout_ms,
+      paio + events,
+      max - events,
+      i);
+  }
+  ceph_assert(events <= max);
+  if (events == 0) {
+    usleep(1);
+  } else {
+    ldout(cct, 20) << __func__ << " max " << max << " events " << events << dendl;
+  }
+
+  return events;
+}
+
+thread_local int32_t thread_ring_idx = -1;
+
+uint32_t ioring_queue_t::get_ring_idx()
+{
+  if (use_append) {
+    if (thread_ring_idx == -1) {
+      uint32_t assigned = (++last_assigned);
+      thread_ring_idx = assigned % ring_count;
+    }
+    return thread_ring_idx;
+  } else {
+    return 0;
+  }
 }
 
 bool ioring_queue_t::supported()

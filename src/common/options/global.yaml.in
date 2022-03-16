@@ -4680,6 +4680,12 @@ options:
   - hybrid
   - zoned
   with_legacy: true
+- name: io_uring_ring_count
+  type: uint
+  level: advanced
+  default: 1
+  desc: ring count for io_uring queue
+  with_legacy: true
 - name: bluestore_zns_ng_path
   type: str
   level: advanced

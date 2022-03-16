@@ -37,6 +37,7 @@ private:
   bool enable_wrt = true;
   bool aio, dio;
   bool io_to_ng = false;
+  uint32_t ring_count = 1;
 
   int vdo_fd = -1;      ///< fd for vdo sysfs directory
   std::string vdo_name;

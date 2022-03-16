@@ -66,7 +66,6 @@ KernelDevice::KernelDevice(CephContext* cct, aio_callback_t cb, void *cbpriv, ai
 {
   fd_directs.resize(WRITE_LIFE_MAX, -1);
   fd_buffereds.resize(WRITE_LIFE_MAX, -1);
-  fd_ngs.resize(WRITE_LIFE_MAX, -1);
 
   bool use_ioring = cct->_conf.get_val<bool>("bdev_ioring");
   unsigned int iodepth = cct->_conf->bdev_aio_max_queue_depth;
@@ -130,6 +129,10 @@ int KernelDevice::open(const string& p)
   if (is_smr() && cct->_conf->contains("bluestore_zns_ng_path")) {
     io_to_ng = true;
     ng_path = cct->_conf->bluestore_zns_ng_path;
+    io_queue->enable_append();
+    ring_count = io_queue->get_ring_count();
+    
+    fd_ngs.resize(WRITE_LIFE_MAX * ring_count, -1);
     dout(1) << __func__ << " io to ng device" << ng_path << dendl;
   }
   for (i = 0; i < WRITE_LIFE_MAX; i++) {
@@ -148,12 +151,14 @@ int KernelDevice::open(const string& p)
     fd_buffereds[i] = fd;
 
     if (io_to_ng) {
-      int fd_ng = ::open(ng_path.c_str(), O_RDWR);
-      if (fd < 0) {
-        r = -errno;
-        break;
+      for (uint32_t j = 0 ; j < ring_count ; j++) {
+        int fd_ng = ::open(ng_path.c_str(), O_RDWR);
+        if (fd < 0) {
+          r = -errno;
+          break;
+        }
+        fd_ngs[i * ring_count + j] = fd_ng;
       }
-      fd_ngs[i] = fd_ng;
     }
   }
 
@@ -445,7 +450,9 @@ int KernelDevice::choose_fd(bool buffered, int write_hint, bool aio) const
   write_hint = WRITE_LIFE_NOT_SET;
 #endif
   if (aio && io_to_ng) {
-    return buffered ? fd_buffereds[write_hint] : fd_ngs[write_hint];
+    uint32_t ring_idx = io_queue->get_ring_idx();
+    return buffered ?
+      fd_buffereds[write_hint] : fd_ngs[write_hint * ring_count + ring_idx];
   } else {
     return buffered ? fd_buffereds[write_hint] : fd_directs[write_hint];
   }
@@ -502,9 +509,9 @@ int KernelDevice::_aio_start()
     int r;
     if (io_to_ng) {
       dout(1) << __func__ << " init queue with fd_ngs" << dendl;
-      r = io_queue->init(fd_ngs, true);
+      r = io_queue->init(fd_ngs);
     } else {
-      r = io_queue->init(fd_directs, false);
+      r = io_queue->init(fd_directs);
     }
     if (r < 0) {
       if (r == -EAGAIN) {
@@ -1131,7 +1138,9 @@ int KernelDevice::aio_read(
     ceph_assert(is_valid_io(off, len));
     _aio_log_start(ioc, off, len);
     if (io_to_ng) {
-      ioc->pending_aios.push_back(aio_t(ioc, fd_ngs[WRITE_LIFE_NOT_SET]));
+      uint32_t ring_idx = io_queue->get_ring_idx();
+      ioc->pending_aios.push_back(
+        aio_t(ioc, fd_ngs[WRITE_LIFE_NOT_SET * ring_count + ring_idx]));
     } else {
       ioc->pending_aios.push_back(aio_t(ioc, fd_directs[WRITE_LIFE_NOT_SET]));
     }
