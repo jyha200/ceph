@@ -563,6 +563,9 @@ void BlueFS::_init_alloc()
   if (bdev[BDEV_NEWDB]) {
     alloc_size[BDEV_NEWDB] = cct->_conf->bluefs_alloc_size;
   }
+  if (bdev[BDEV_CNS]) {
+    alloc_size[BDEV_CNS] = cct->_conf->bluefs_alloc_size;
+  }
 
   for (unsigned id = 0; id < bdev.size(); ++id) {
     if (!bdev[id]) {
@@ -928,7 +931,8 @@ int BlueFS::_write_super(int dev)
   ceph_assert_always(bl.length() <= get_super_length());
   bl.append_zero(get_super_length() - bl.length());
 
-  bdev[dev]->write(get_super_offset(), bl, false, WRITE_LIFE_SHORT);
+  //bdev[dev]->write(get_super_offset(), bl, false, WRITE_LIFE_SHORT);
+  bdev[BDEV_CNS]->write(get_super_offset(), bl, false, WRITE_LIFE_SHORT);
   dout(20) << __func__ << " v " << super.version
            << " crc 0x" << std::hex << crc
            << " offset 0x" << get_super_offset() << std::dec
@@ -945,8 +949,10 @@ int BlueFS::_open_super()
   int r;
 
   // always the second block
-  r = bdev[BDEV_DB]->read(get_super_offset(), get_super_length(),
-			  &bl, ioc[BDEV_DB], false);
+//  r = bdev[BDEV_DB]->read(get_super_offset(), get_super_length(),
+//			  &bl, ioc[BDEV_DB], false);
+  r = bdev[BDEV_CNS]->read(get_super_offset(), get_super_length(),
+			  &bl, ioc[BDEV_CNS], false);
   if (r < 0)
     return r;
 
@@ -2188,7 +2194,7 @@ void BlueFS::_rewrite_log_and_layout_sync(bool allocate_with_fallback,
   // clear out log (be careful who calls us!!!)
   log_t.clear();
 
-  dout(20) << __func__ << " super_dev:" << super_dev
+  dout(1) << __func__ << " super_dev:" << super_dev
                        << " log_dev:" << log_dev
                        << " log_dev_new:" << log_dev_new
 		       << " flags:" << flags
@@ -2311,7 +2317,7 @@ void BlueFS::_compact_log_async(std::unique_lock<ceph::mutex>& l)
 
   // 1. allocate new log space and jump to it.
   old_log_jump_to = log_file->fnode.get_allocated();
-  dout(10) << __func__ << " old_log_jump_to 0x" << std::hex << old_log_jump_to
+  dout(1) << __func__ << " old_log_jump_to 0x" << std::hex << old_log_jump_to
            << " need 0x" << (old_log_jump_to + cct->_conf->bluefs_max_log_runway) << std::dec << dendl;
   int r = _allocate(vselector->select_prefer_bdev(log_file->vselector_hint),
 		    cct->_conf->bluefs_max_log_runway,
@@ -2498,7 +2504,7 @@ int BlueFS::_flush_and_sync_log(std::unique_lock<ceph::mutex>& l,
     }
   }
 
-  dout(10) << __func__ << " " << log_t << dendl;
+  dout(1) << __func__ << " " << log_t << dendl;
   ceph_assert(!log_t.empty());
 
   // allocate some more space (before we run out)?
@@ -2688,7 +2694,7 @@ int BlueFS::_signal_dirty_to_log(FileWriter *h)
 
 int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
 {
-  dout(10) << __func__ << " " << h << " pos 0x" << std::hex << h->pos
+  dout(1) << __func__ << " " << h << " pos 0x" << std::hex << h->pos
 	   << " 0x" << offset << "~" << length << std::dec
 	   << " to " << h->file->fnode << dendl;
   if (h->file->deleted) {
@@ -2720,13 +2726,15 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
   // do not bother to dirty the file if we are overwriting
   // previously allocated extents.
 
-  if (allocated < offset + length) {
+//  if (allocated < offset + length) {
+  if (h->file->fnode.ino != 1) {
     // we should never run out of log space here; see the min runway check
     // in _flush_and_sync_log.
     ceph_assert(h->file->fnode.ino != 1);
     int r = _allocate(vselector->select_prefer_bdev(h->file->vselector_hint),
-		      offset + length - allocated,
-		      &h->file->fnode);
+		      offset + length,
+		      //offset + length - allocated,
+		      &h->file->fnode, true);
     if (r < 0) {
       derr << __func__ << " allocated: 0x" << std::hex << allocated
            << " offset: 0x" << offset << " length: 0x" << length << std::dec
@@ -2746,7 +2754,7 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
       h->file->is_dirty = true;
     }
   }
-  dout(20) << __func__ << " file now, unflushed " << h->file->fnode << dendl;
+  dout(1) << __func__ << " file now, unflushed " << h->file->fnode << dendl;
 
   uint64_t x_off = 0;
   auto p = h->file->fnode.seek(offset, &x_off);
@@ -2793,6 +2801,7 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
     uint64_t x_len = std::min(p->length - x_off, length);
     bufferlist t;
     t.substr_of(bl, bloff, x_len);
+    dout(1) << __func__ << " write " << std::hex << p->offset + x_off << std::dec << dendl;
     if (cct->_conf->bluefs_sync_write) {
       bdev[p->bdev]->write(p->offset + x_off, t, buffered, h->write_hint);
     } else {
@@ -2814,7 +2823,11 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
   for (unsigned i = 0; i < MAX_BDEV; ++i) {
     if (bdev[i]) {
       if (h->iocv[i] && h->iocv[i]->has_pending_aios()) {
-        bdev[i]->aio_submit(h->iocv[i]);
+        if (bdev[i]->is_smr()) {
+          bdev[i]->aio_submit_legacy(h->iocv[i]);
+        } else {
+          bdev[i]->aio_submit(h->iocv[i]);
+        }
       }
     }
   }
@@ -2997,6 +3010,7 @@ void BlueFS::flush_bdev()
     // alloc space from BDEV_SLOW is unexpected.
     // So most cases we don't alloc from BDEV_SLOW and so avoiding flush not-used device.
     if (bdev[i] && (i != BDEV_SLOW || _get_used(i))) {
+      dout(1) << __func__ << " BDEV " << i << dendl; 
       bdev[i]->flush();
     }
   }
@@ -3046,15 +3060,21 @@ int BlueFS::_allocate_without_fallback(uint8_t id, uint64_t len,
 }
 
 int BlueFS::_allocate(uint8_t id, uint64_t len,
-		      bluefs_fnode_t* node)
+		      bluefs_fnode_t* node, bool discard_and_new)
 {
-  dout(10) << __func__ << " len 0x" << std::hex << len << std::dec
+  dout(1) << __func__ << " len 0x" << std::hex << len << std::dec
            << " from " << (int)id << dendl;
   ceph_assert(id < alloc.size());
   int64_t alloc_len = 0;
   PExtentVector extents;
   uint64_t hint = 0;
   int64_t need = len;
+  if (discard_and_new) {
+    for (auto& p: node->extents) {
+      pending_release[p.bdev].insert(p.offset, p.length);
+    }
+    node->clear_extents();
+  }
   if (alloc[id]) {
     need = round_up_to(len, alloc_size[id]);
     if (!node->extents.empty() && node->extents.back().bdev == id) {
@@ -3112,7 +3132,7 @@ int BlueFS::_allocate(uint8_t id, uint64_t len,
 
 int BlueFS::_preallocate(FileRef f, uint64_t off, uint64_t len)
 {
-  dout(10) << __func__ << " file " << f->fnode << " 0x"
+  dout(1) << __func__ << " file " << f->fnode << " 0x"
 	   << std::hex << off << "~" << len << std::dec << dendl;
   if (f->deleted) {
     dout(10) << __func__ << "  deleted, no-op" << dendl;

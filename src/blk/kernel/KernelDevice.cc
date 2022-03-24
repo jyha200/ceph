@@ -462,6 +462,7 @@ int KernelDevice::flush()
   // stable on disk: whichever thread sees the flag first will block
   // followers until the aio is stable.
   std::lock_guard l(flush_mutex);
+  dout(1) << __func__ << " devname " << devname << dendl;
 
   bool expect = true;
   if (!io_since_flush.compare_exchange_strong(expect, false)) {
@@ -482,8 +483,11 @@ int KernelDevice::flush()
     _exit(1);
   }
   utime_t start = ceph_clock_now();
-//  int r = ::fdatasync(fd_directs[WRITE_LIFE_NOT_SET]);
-  int r = ::fsync(fd_directs[WRITE_LIFE_NOT_SET]);
+  int r = 0;
+  if (io_to_ng) {
+  } else {
+    ::fdatasync(fd_directs[WRITE_LIFE_NOT_SET]);
+  }
   utime_t end = ceph_clock_now();
   utime_t dur = end - start;
   if (r < 0) {
@@ -492,6 +496,7 @@ int KernelDevice::flush()
     ceph_abort();
   }
   dout(5) << __func__ << " in " << dur << dendl;;
+  dout(1) << __func__ << " done devname " << devname << dendl;
   return r;
 }
 
@@ -886,6 +891,7 @@ int KernelDevice::_sync_write(uint64_t off, bufferlist &bl, bool buffered, int w
   auto o = off;
   size_t idx = 0;
   do {
+    dout(1) << __func__ << " off " << o << " len " << iov[idx].iov_len << dendl;
     auto r = ::pwritev(choose_fd(buffered, write_hint),
       &iov[idx], iov.size() - idx, o);
 
@@ -893,6 +899,12 @@ int KernelDevice::_sync_write(uint64_t off, bufferlist &bl, bool buffered, int w
       r = -errno;
       derr << __func__ << " pwritev error: " << cpp_strerror(r) << dendl;
       return r;
+    }
+    if (is_smr() && buffered) {
+      auto result = ::sync_file_range(fd_buffereds[WRITE_LIFE_NOT_SET], o, r, SYNC_FILE_RANGE_WRITE|SYNC_FILE_RANGE_WAIT_AFTER|SYNC_FILE_RANGE_WAIT_BEFORE);
+      if (result < 0) {
+        ceph_assert(false);
+      }
     }
     o += r;
     left -= r;
@@ -920,6 +932,7 @@ int KernelDevice::_sync_write(uint64_t off, bufferlist &bl, bool buffered, int w
     if (r < 0) {
       r = -errno;
       derr << __func__ << " sync_file_range error: " << cpp_strerror(r) << dendl;
+      ceph_assert(false);
       return r;
     }
   }
@@ -937,7 +950,7 @@ int KernelDevice::write(
   int write_hint)
 {
   uint64_t len = bl.length();
-  dout(20) << __func__ << " 0x" << std::hex << off << "~" << len << std::dec
+  dout(1) << __func__ << " 0x" << std::hex << off << "~" << len << std::dec
 	   << " " << buffermode(buffered) 
 	   << dendl;
   ceph_assert(is_valid_io(off, len));
@@ -966,7 +979,7 @@ int KernelDevice::aio_write(
   int write_hint)
 {
   uint64_t len = bl.length();
-  dout(20) << __func__ << " 0x" << std::hex << off << "~" << len << std::dec
+  dout(1) << __func__ << " 0x" << std::hex << off << "~" << len << std::dec
 	   << " " << buffermode(buffered)
 	   << dendl;
   ceph_assert(is_valid_io(off, len));

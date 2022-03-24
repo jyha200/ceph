@@ -95,6 +95,8 @@ int64_t ZonedAllocator::allocate(
       select_other_zone(target_idx);
     }
 
+    ldout(cct, 1) << " trying to allocate 0x"
+		 << std::hex << offset << " size " << target_size << std::dec << dendl;
     extents->emplace_back(bluestore_pextent_t(offset, target_size));
     remaining_size -= target_size;
     last_visited_idx++;

@@ -193,6 +193,32 @@ std::vector<uint64_t> HMSMRDevice::get_zones()
   return wp;
 }
 
+void HMSMRDevice::aio_submit_legacy(IOContext* ioc) {
+  if (ioc->pending_aios.front().iocb.aio_lio_opcode == IO_CMD_PWRITEV) {
+    std::list<uint64_t> requested_zones;
+    for (auto pending_aio = ioc->pending_aios.begin();
+        pending_aio != ioc->pending_aios.end();
+        ++pending_aio) {
+      uint64_t zone = get_zone(pending_aio->offset, zone_size);
+      pending_aio->priv = static_cast<IOContext*>(ioc);
+      std::lock_guard lock(pending_ios[zone].lock);
+      aio_t aio_to_push = *pending_aio;
+      pending_ios[zone].aios.push_back(aio_to_push);
+      requested_zones.push_back(zone);
+    }
+
+    for (auto zone = requested_zones.begin();
+        zone != requested_zones.end();
+        ++zone) {
+      do_aio_submit(*zone, false);
+    }
+  }
+  else {
+    KernelDevice::aio_submit(ioc);
+  }
+  return;
+}
+
 void HMSMRDevice::aio_submit(IOContext* ioc) {
   if (ioc->pending_aios.front().iocb.aio_lio_opcode == IO_CMD_PWRITEV) {
     std::list<uint64_t> requested_zones;
@@ -206,6 +232,8 @@ void HMSMRDevice::aio_submit(IOContext* ioc) {
         ioc->post_addrs.push_back(post_addr);
         pending_aio->post_offset_ptr = &(ioc->post_addrs.back().offset);
         pending_aio->offset = zone * zone_size;
+        pending_aio->iocb.aio_lio_opcode = IO_CMD_APPEND;
+        dout(1) << __func__ << " off " << std::hex << pending_aio->offset << " len " << std::hex << pending_aio->length << dendl;
       } else {
         std::lock_guard lock(pending_ios[zone].lock);
         aio_t aio_to_push = *pending_aio;
@@ -250,13 +278,13 @@ void HMSMRDevice::do_aio_submit(uint64_t zone, bool completed) {
 
   auto pending_aio = pending_ios[zone].aios.begin();
   if (need_alloc_submit_sync() == false) {
-    dout(10) << __func__ << " offset " << pending_aio->offset << " to zone aligned " << zone * zone_size << dendl;
+    dout(1) << __func__ << " offset " << pending_aio->offset << " to zone aligned " << zone * zone_size << dendl;
     pending_aio->offset = zone * zone_size;
   }
   auto ioc = static_cast<IOContext*>(pending_aio->priv);
   dout(10) << __func__ << " target pending ioc" <<  ioc <<  dendl;
 
-  dout(10) << __func__ << " off " << std::hex << pending_aio->offset << " len " << std::hex << pending_aio->length << dendl;
+  dout(1) << __func__ << " off " << std::hex << pending_aio->offset << " len " << std::hex << pending_aio->length << dendl;
   dout(10) << __func__ << " before submission ioc " << ioc
     << " pending " << ioc->num_pending.load()
     << " running " << ioc->num_running.load() <<dendl;

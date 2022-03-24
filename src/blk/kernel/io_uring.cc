@@ -96,7 +96,7 @@ static int ioring_get_cqe(struct ioring_data *d, unsigned int max,
     if (d->use_append) {
       uring_priv_t *uring_priv = (uring_priv_t *)(uintptr_t) io_uring_cqe_get_data(cqe);
       io = uring_priv->aio;
-      if (io->iocb.aio_lio_opcode == IO_CMD_PWRITEV) {
+      if (io->iocb.aio_lio_opcode == IO_CMD_APPEND) {
         post_process_append(io, uring_priv);
       }
       cqe->res = io->length;
@@ -170,6 +170,24 @@ static void create_io_command(
   io_cmd->rw.nlb = length / BLK_SIZE - 1;
 }
 
+static void create_write_command(
+  io_uring_sqe *sqe,
+  int fd,
+  aio_t *io,
+  uring_priv_t *uring_priv)
+{
+  // No vector support for read
+  ceph_assert(io->iov.size() == 1);
+  create_io_command(
+    &uring_priv->io_cmd,
+    nvme_io_command_t::opcode::WRITE,
+    io->offset,
+    io->length,
+    io->iov[0].iov_base);
+
+  create_passthrough_command(sqe, fd, uring_priv);
+}
+
 static void create_read_command(
   io_uring_sqe *sqe,
   int fd,
@@ -220,6 +238,8 @@ static void init_sqe(struct ioring_data *d, struct io_uring_sqe *sqe,
     uring_priv->aio = io;
     priv = uring_priv;
     if (io->iocb.aio_lio_opcode == IO_CMD_PWRITEV) {
+      create_write_command(sqe, fixed_fd, io, uring_priv);
+    } else if (io->iocb.aio_lio_opcode == IO_CMD_APPEND) {
       create_append_command(sqe, fixed_fd, io, uring_priv);
     } else if (io->iocb.aio_lio_opcode == IO_CMD_PREADV) {
       create_read_command(sqe, fixed_fd, io, uring_priv);

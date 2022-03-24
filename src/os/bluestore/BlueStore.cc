@@ -5599,6 +5599,7 @@ int BlueStore::_create_alloc()
 
 #ifdef HAVE_LIBZBD
   if (freelist_type == "zoned") {
+/*
     Allocator *a = Allocator::create(
       cct, cct->_conf->bluestore_allocator,
       bdev->get_conventional_region_size(),
@@ -5611,7 +5612,8 @@ int BlueStore::_create_alloc()
       delete alloc;
       return -EINVAL;
     }
-    shared_alloc.set(a);
+    shared_alloc.set(a);*/
+    shared_alloc.set(alloc);
   } else
 #endif
   {
@@ -5669,11 +5671,11 @@ int BlueStore::_init_alloc(std::map<uint64_t, uint64_t> *zone_adjustments)
     auto reserved = _get_ondisk_reserved();
     // for now we require a conventional zone
     ceph_assert(bdev->get_conventional_region_size());
-    ceph_assert(shared_alloc.a != alloc);  // zoned allocator doesn't use conventional region
-    shared_alloc.a->init_add_free(
+//    ceph_assert(shared_alloc.a != alloc);  // zoned allocator doesn't use conventional region
+/*    shared_alloc.a->init_add_free(
       reserved,
       p2align(bdev->get_conventional_region_size(), min_alloc_size) - reserved);
-
+*/
     // init sequential zone based on the device's write pointers
     a->init_from_zone_pointers(std::move(zones));
     dout(1) << __func__
@@ -5987,9 +5989,9 @@ int BlueStore::_minimal_open_bluefs(bool create)
 
   // shared device
   bfn = path + "/block";
-  if (cct->_conf->contains("bluestore_cns_path")) {
-    bfn = cct->_conf->bluestore_cns_path;
-  }
+//  if (cct->_conf->contains("bluestore_cns_path")) {
+//    bfn = cct->_conf->bluestore_cns_path;
+//  }
   // never trim here
   r = bluefs->add_block_device(bluefs_layout.shared_bdev, bfn, false,
                                0, // no need to provide valid 'reserved' for shared dev
@@ -5998,6 +6000,17 @@ int BlueStore::_minimal_open_bluefs(bool create)
     derr << __func__ << " add block device(" << bfn << ") returned: "
 	  << cpp_strerror(r) << dendl;
     goto free_bluefs;
+  }
+
+  if (cct->_conf->contains("bluestore_cns_path")) {
+    bfn = cct->_conf->bluestore_cns_path;
+    r = bluefs->add_block_device(BlueFS::BDEV_CNS, bfn, false,
+        0);
+    if (r < 0) {
+      derr << __func__ << " add block device(" << bfn << ") returned: "
+        << cpp_strerror(r) << dendl;
+      goto free_bluefs;
+    }
   }
 
   bfn = path + "/block.wal";

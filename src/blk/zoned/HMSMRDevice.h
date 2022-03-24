@@ -65,6 +65,7 @@ public:
     return 0;
   }
 	void aio_submit(IOContext* ioc) override;
+  void aio_submit_legacy(IOContext* ioc) override;
 	void do_aio_submit(uint64_t zone, bool completed);
 
 	bool supported_bdev_label() override { return false; }

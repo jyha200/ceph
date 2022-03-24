@@ -223,6 +223,7 @@ public:
   }
 
   virtual void aio_submit(IOContext *ioc) = 0;
+  virtual void aio_submit_legacy(IOContext* ioc) { ceph_assert(false); };
 
   void set_no_exclusive_lock() {
     lock_exclusive = false;

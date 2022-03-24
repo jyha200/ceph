@@ -93,12 +93,13 @@ struct bluefs_shared_alloc_context_t {
 class BlueFS {
 public:
   CephContext* cct;
-  static constexpr unsigned MAX_BDEV = 5;
+  static constexpr unsigned MAX_BDEV = 6;
   static constexpr unsigned BDEV_WAL = 0;
   static constexpr unsigned BDEV_DB = 1;
   static constexpr unsigned BDEV_SLOW = 2;
   static constexpr unsigned BDEV_NEWWAL = 3;
   static constexpr unsigned BDEV_NEWDB = 4;
+  static constexpr unsigned BDEV_CNS = 5;
 
   enum {
     WRITER_UNKNOWN,
@@ -387,7 +388,7 @@ private:
   }
   const char* get_device_name(unsigned id);
   int _allocate(uint8_t bdev, uint64_t len,
-		bluefs_fnode_t* node);
+		bluefs_fnode_t* node, bool discard_and_new = false);
   int _allocate_without_fallback(uint8_t id, uint64_t len,
 				 PExtentVector* extents);
 
