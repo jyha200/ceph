@@ -41,9 +41,9 @@ class ZonedAllocator : public Allocator {
   std::atomic<uint32_t> cleaning_zone = -1;
   std::vector<zone_state_t> zone_states;
 
-  static const uint64_t max_open_zone = 256;
+  uint64_t max_open_zone = 256;
   static const uint64_t interleaving_unit = 128 * 1024;
-  uint64_t active_zones[max_open_zone];
+  std::vector<uint64_t> active_zones;
   uint64_t last_visited_idx;
 
   inline uint64_t get_offset(uint64_t zone_num) const {

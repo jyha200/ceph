@@ -44,8 +44,12 @@ ZonedAllocator::ZonedAllocator(CephContext* cct,
 		 << std::dec
 		 << dendl;
   ceph_assert(size % zone_size == 0);
+  max_open_zone = cct->_conf->bluestore_zns_active_zone_count;
+  ldout(cct, 1) << " max_open_zone 0x" << std::hex << max_open_zone << std::dec
+    << dendl;
+  active_zones.resize(max_open_zone);
 
- zone_states.resize(num_zones);
+  zone_states.resize(num_zones);
   for (uint64_t i = 0 ; i < max_open_zone ; i++) {
     active_zones[i] = i + first_seq_zone_num;
   }
