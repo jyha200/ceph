@@ -201,7 +201,10 @@ public:
   virtual bool is_rotational() { return rotational; }
 
   // HM-SMR-specific calls
-  virtual bool need_alloc_submit_sync() const { return false; }
+  virtual bool need_alloc_submit_sync() const { return true; }
+  virtual bool need_postpone_db_transaction() const { return false; }
+  virtual bool support_multi_qd_submission() const { return false; }
+  virtual bool support_append() const { return false; }
   virtual bool is_smr() const { return false; }
   virtual uint64_t get_zone_size() const {
     ceph_assert(is_smr());

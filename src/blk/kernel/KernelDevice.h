@@ -37,6 +37,7 @@ private:
   bool enable_wrt = true;
   bool aio, dio;
   bool io_to_ng = false;
+  bool alloc_submit_sync = true;
 
   int vdo_fd = -1;      ///< fd for vdo sysfs directory
   std::string vdo_name;
@@ -117,7 +118,7 @@ private:
 public:
   KernelDevice(CephContext* cct, aio_callback_t cb, void *cbpriv, aio_callback_t d_cb, void *d_cbpriv);
 
-  bool need_alloc_submit_sync() const override { return !io_to_ng; }
+  bool need_alloc_submit_sync() const override { return alloc_submit_sync; }
 
   void aio_submit(IOContext *ioc) override;
   void discard_drain() override;

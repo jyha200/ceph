@@ -15583,7 +15583,7 @@ int BlueStore::_do_write(
 			  min_alloc_size);
   }
 
-  if (bdev->is_smr() && bdev->need_alloc_submit_sync() == false) {
+  if (bdev->is_smr() && bdev->need_postpone_db_transaction()) {
     txc->post_write = true;
     o->post_write = true;
     txc->post_wctxs.push_back({std::move(wctx), offset, length, o});

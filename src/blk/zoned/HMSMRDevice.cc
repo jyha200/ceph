@@ -53,10 +53,11 @@ static void hmsmr_cb(void* priv, void* priv2)
 
   if (aio->iocb.aio_lio_opcode == IO_CMD_PWRITEV) {
     uint64_t zone = get_zone(aio->offset, bdev->get_zone_size());
-    if (bdev->need_alloc_submit_sync() == false) {
+    if (bdev->support_append()) {
       uint64_t post_zone = get_zone(*aio->post_offset_ptr, bdev->get_zone_size());
       ceph_assert(zone == post_zone);
-    } else {
+    }
+    if (bdev->support_multi_qd_submission() == false) {
       bdev->do_aio_submit(zone, true);
     }
   }
@@ -75,6 +76,15 @@ HMSMRDevice::HMSMRDevice(CephContext* cct,
     void *d_cbpriv)
   : KernelDevice(cct, hmsmr_cb, new hmsmr_cbpriv(cb, cbpriv, this), d_cb, d_cbpriv)
 {
+  postpone_db_transaction = cct->_conf->bluestore_zns_postpone_db_transaction;
+  if (postpone_db_transaction) {
+    if (cct->_conf->contains("bluestore_zns_ng_path")) {
+      support_append_ = cct->_conf->bluestore_zns_use_append;
+      if (support_append_) {
+        support_multi_qd_submission_ = cct->_conf->bluestore_zns_multi_qd_submit;
+      }
+    }
+  }
 }
 
 bool HMSMRDevice::support(const std::string& path)
@@ -201,27 +211,35 @@ void HMSMRDevice::aio_submit(IOContext* ioc) {
         ++pending_aio) {
       uint64_t zone = get_zone(pending_aio->offset, zone_size);
       pending_aio->priv = static_cast<IOContext*>(ioc);
-      if (need_alloc_submit_sync() == false) {
-        IOContext::post_addr_t post_addr = { .length = pending_aio->length };
+      if (postpone_db_transaction) {
+        IOContext::post_addr_t post_addr = {
+          .offset = pending_aio->offset,
+          .length = pending_aio->length };
         ioc->post_addrs.push_back(post_addr);
         pending_aio->post_offset_ptr = &(ioc->post_addrs.back().offset);
-        pending_aio->offset = zone * zone_size;
+      }
+
+      if (support_multi_qd_submission()) {
+        if (support_append()) {
+          pending_aio->offset = zone * zone_size;
+        }
       } else {
         std::lock_guard lock(pending_ios[zone].lock);
+
         aio_t aio_to_push = *pending_aio;
         pending_ios[zone].aios.push_back(aio_to_push);
         requested_zones.push_back(zone);
       }
     }
 
-    if (need_alloc_submit_sync()) {
+    if (support_multi_qd_submission()) {
+      KernelDevice::aio_submit(ioc);
+    } else {
       for (auto zone = requested_zones.begin();
           zone != requested_zones.end();
           ++zone) {
         do_aio_submit(*zone, false);
       }
-    } else {
-      KernelDevice::aio_submit(ioc);
     }
   }
   else {
@@ -249,7 +267,7 @@ void HMSMRDevice::do_aio_submit(uint64_t zone, bool completed) {
   }
 
   auto pending_aio = pending_ios[zone].aios.begin();
-  if (need_alloc_submit_sync() == false) {
+  if (support_append()) {
     dout(10) << __func__ << " offset " << pending_aio->offset << " to zone aligned " << zone * zone_size << dendl;
     pending_aio->offset = zone * zone_size;
   }

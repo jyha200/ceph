@@ -131,6 +131,11 @@ int KernelDevice::open(const string& p)
     io_to_ng = true;
     ng_path = cct->_conf->bluestore_zns_ng_path;
     dout(1) << __func__ << " io to ng device" << ng_path << dendl;
+    if (cct->_conf->bluestore_zns_postpone_db_transaction) {
+      if (cct->_conf->bluestore_zns_use_append) {
+        alloc_submit_sync = cct->_conf->bluestore_zns_alloc_submit_sync;
+      }
+    }
   }
   for (i = 0; i < WRITE_LIFE_MAX; i++) {
     int fd = ::open(path.c_str(), O_RDWR | O_DIRECT);
