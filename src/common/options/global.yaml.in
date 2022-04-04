@@ -4680,6 +4680,48 @@ options:
   - hybrid
   - zoned
   with_legacy: true
+- name: bluestore_zns_active_zone_count
+  type: uint
+  level: advanced
+  desc: latency profile
+  default: 256
+  with_legacy: true
+- name: bluestore_zns_multi_qd_submit
+  type: bool
+  level: advanced
+  desc: latency profile
+  default: false
+  with_legacy: true
+- name: bluestore_zns_postpone_db_transaction
+  type: bool
+  level: advanced
+  desc: latency profile
+  default: false
+  with_legacy: true
+- name: bluestore_zns_alloc_submit_sync
+  type: bool
+  level: advanced
+  desc: latency profile
+  default: true
+  with_legacy: true
+- name: bluestore_zns_use_append
+  type: bool
+  level: advanced
+  desc: latency profile
+  default: false
+  with_legacy: true
+- name: bluestore_lat_profile
+  type: bool
+  level: advanced
+  desc: latency profile
+  default: false
+  with_legacy: true
+- name: bluestore_lat_injection_us
+  type: uint
+  level: advanced
+  desc: latency injection
+  default: 0
+  with_legacy: true
 - name: bluestore_zns_ng_path
   type: str
   level: advanced
