@@ -509,6 +509,7 @@ int KernelDevice::_aio_start()
       dout(1) << __func__ << " init queue with fd_ngs" << dendl;
       r = io_queue->init(fd_ngs, true);
     } else {
+      dout(1) << __func__ << " init queue with fd_directs" << dendl;
       r = io_queue->init(fd_directs, false);
     }
     if (r < 0) {

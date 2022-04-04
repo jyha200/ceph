@@ -28,6 +28,7 @@ struct ioring_data {
   pthread_mutex_t sq_mutex;
   int epoll_fd = -1;
   std::map<int, int> fixed_fds_map;
+  bool use_ng = false;
   bool use_append = false;
   CephContext* cct;
 };
@@ -93,11 +94,13 @@ static int ioring_get_cqe(struct ioring_data *d, unsigned int max,
   unsigned head;
   io_uring_for_each_cqe(ring, head, cqe) {
     struct aio_t *io = NULL;
-    if (d->use_append) {
+    if (d->use_ng) {
       uring_priv_t *uring_priv = (uring_priv_t *)(uintptr_t) io_uring_cqe_get_data(cqe);
       io = uring_priv->aio;
       if (io->iocb.aio_lio_opcode == IO_CMD_PWRITEV) {
-        post_process_append(io, uring_priv);
+        if (d->use_append) {
+          post_process_append(io, uring_priv);
+        }
       }
       cqe->res = io->length;
       delete uring_priv;
@@ -188,6 +191,25 @@ static void create_read_command(
   create_passthrough_command(sqe, fd, uring_priv);
 }
 
+static void create_write_command(
+  io_uring_sqe *sqe,
+  int fd,
+  aio_t *io,
+  uring_priv_t *uring_priv)
+{
+  // No vector support for append
+  ceph_assert(io->iov.size() == 1);
+
+  create_io_command(
+    &uring_priv->io_cmd,
+    nvme_io_command_t::opcode::WRITE,
+    io->offset,
+    io->length,
+    io->iov[0].iov_base);
+
+  create_passthrough_command(sqe, fd, uring_priv);
+}
+
 static void create_append_command(
   io_uring_sqe *sqe,
   int fd,
@@ -215,12 +237,16 @@ static void init_sqe(struct ioring_data *d, struct io_uring_sqe *sqe,
   ceph_assert(fixed_fd != -1);
   void *priv = io;
 
-  if (d->use_append) {
+  if (d->use_ng) {
     uring_priv_t* uring_priv = new uring_priv_t;
     uring_priv->aio = io;
     priv = uring_priv;
     if (io->iocb.aio_lio_opcode == IO_CMD_PWRITEV) {
-      create_append_command(sqe, fixed_fd, io, uring_priv);
+      if (d->use_append) {
+        create_append_command(sqe, fixed_fd, io, uring_priv);
+      } else {
+        create_write_command(sqe, fixed_fd, io, uring_priv);
+      }
     } else if (io->iocb.aio_lio_opcode == IO_CMD_PREADV) {
       create_read_command(sqe, fixed_fd, io, uring_priv);
     } else {
@@ -291,13 +317,16 @@ ioring_queue_t::~ioring_queue_t()
 {
 }
 
-int ioring_queue_t::init(std::vector<int> &fds, bool use_append)
+int ioring_queue_t::init(std::vector<int> &fds, bool use_ng)
 {
   unsigned flags = 0;
 
   pthread_mutex_init(&d->cq_mutex, NULL);
   pthread_mutex_init(&d->sq_mutex, NULL);
-  d->use_append = use_append;
+  d->use_ng = use_ng;
+  if (use_ng) {
+    d->use_append = d->cct->_conf->bluestore_zns_use_append;
+  }
 
   if (hipri)
     flags |= IORING_SETUP_IOPOLL;
@@ -353,9 +382,6 @@ int ioring_queue_t::submit_batch(aio_iter beg, aio_iter end,
                                  uint16_t aios_size, void *priv,
                                  int *retries)
 {
-  (void)aios_size;
-  (void)retries;
-
   pthread_mutex_lock(&d->sq_mutex);
   int rc = ioring_queue(d.get(), priv, beg, end);
   pthread_mutex_unlock(&d->sq_mutex);
