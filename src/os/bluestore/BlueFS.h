@@ -307,6 +307,10 @@ private:
   ceph::mutex lock = ceph::make_mutex("BlueFS::lock");
 
   PerfCounters *logger = nullptr;
+  bool zns_fs = false;
+  static const int NUM_ZNS_MODE_SUPER_BLOCK = 2;
+  std::atomic_int last_written;
+  uint64_t zone_size = -1;
 
   uint64_t max_bytes[MAX_BDEV] = {0};
   uint64_t max_bytes_pcounters[MAX_BDEV] = {
@@ -387,7 +391,7 @@ private:
   }
   const char* get_device_name(unsigned id);
   int _allocate(uint8_t bdev, uint64_t len,
-		bluefs_fnode_t* node);
+		bluefs_fnode_t* node, uint64_t offset = 0xFFFFFFFFFFFFFFFFUL);
   int _allocate_without_fallback(uint8_t id, uint64_t len,
 				 PExtentVector* extents);
 
@@ -466,11 +470,20 @@ private:
 
   // always put the super in the second 4k block.  FIXME should this be
   // block size independent?
-  unsigned get_super_offset() {
-    return 4096;
+  unsigned get_super_offset(uint64_t sb_idx = 0) {
+    if (zns_fs) {
+      uint64_t zone = get_sb_zone(sb_idx);
+      return zone * zone_size;
+    } else {
+      return 4096;
+    }
   }
   unsigned get_super_length() {
     return 4096;
+  }
+  unsigned get_sb_zone(uint64_t sb_idx) {
+    // first zone is reserved for MBR
+    return sb_idx + 1;
   }
 
 public:

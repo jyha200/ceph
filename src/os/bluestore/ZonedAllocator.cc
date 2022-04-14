@@ -50,6 +50,12 @@ ZonedAllocator::ZonedAllocator(CephContext* cct,
   active_zones.resize(max_open_zone);
 
   zone_states.resize(num_zones);
+  num_available_zones = num_zones;
+  if (cct->_conf->bluestore_zns_fs) {
+    reserved_zone_for_fs = first_seq_zone_num;
+    first_seq_zone_num += RESERVE_FOR_ZNS_FS;
+    num_available_zones = num_zones - RESERVE_FOR_ZNS_FS;
+  }
   for (uint64_t i = 0 ; i < max_open_zone ; i++) {
     active_zones[i] = i + first_seq_zone_num;
   }
@@ -61,8 +67,8 @@ ZonedAllocator::~ZonedAllocator()
 }
 
 void ZonedAllocator::select_other_zone(uint64_t index) {
-  uint64_t current_zone = active_zones[index];
-  uint64_t new_zone = (current_zone + max_open_zone) % num_zones;
+  uint64_t current_zone = active_zones[index] - first_seq_zone_num;
+  uint64_t new_zone = ((current_zone + max_open_zone) % num_available_zones) + first_seq_zone_num;
   active_zones[index] = new_zone;
 }
 
@@ -75,7 +81,14 @@ int64_t ZonedAllocator::allocate(
 {
   std::lock_guard l(lock);
 
-  ceph_assert(want_size % 4096 == 0);
+  ceph_assert(want_size % block_size == 0);
+  if (hint == ZNS_FS_LOG_FILE) {
+    ceph_assert(want_size < zone_size * RESERVE_FOR_ZNS_FS);
+    extents->emplace_back(bluestore_pextent_t(get_offset(reserved_zone_for_fs), want_size));
+    ldout(cct, 1) << " trying to allocate 0x"
+      << std::hex << want_size << std::dec << " for ZNS_FS"<< dendl;
+    return want_size;
+  }
 
   ldout(cct, 10) << " trying to allocate 0x"
 		 << std::hex << want_size << std::dec << dendl;
@@ -158,6 +171,8 @@ void ZonedAllocator::init_from_zone_pointers(
 
 int64_t ZonedAllocator::pick_zone_to_clean(float min_score, uint64_t min_saved)
 {
+  // TODO remove temp. disabled cleaning
+  return -1;
   std::lock_guard l(lock);
   int32_t best = -1;
   float best_score = 0.0;

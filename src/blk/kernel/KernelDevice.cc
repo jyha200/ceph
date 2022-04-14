@@ -659,20 +659,24 @@ void KernelDevice::_aio_thread()
                  << " with " << (ioc->num_running.load() - 1)
                  << " aios left" << dendl;
 
-	// NOTE: once num_running and we either call the callback or
-	// call aio_wake we cannot touch ioc or aio[] as the caller
-	// may free it.
-	if (ioc->priv) {
-    if (is_smr()) {
-      ioc->num_running--;
-      aio_callback(aio_callback_priv, aio[i]);
-    }
-    else if (--ioc->num_running == 0) {
-	    aio_callback(aio_callback_priv, ioc->priv);
-	  }
-	} else {
-          ioc->try_aio_wake();
-	}
+        // NOTE: once num_running and we either call the callback or
+        // call aio_wake we cannot touch ioc or aio[] as the caller
+        // may free it.
+        if (ioc->priv) {
+          if (is_smr()) {
+            ioc->num_running--;
+            aio_callback(aio_callback_priv, aio[i]);
+          }
+          else if (--ioc->num_running == 0) {
+            aio_callback(aio_callback_priv, ioc->priv);
+          }
+        } else {
+          if(is_smr()) {
+            aio_callback(aio_callback_priv, aio[i]);
+          } else {
+            ioc->try_aio_wake();
+          }
+        }
       }
     }
     if (cct->_conf->bdev_debug_aio) {
@@ -892,14 +896,41 @@ int KernelDevice::_sync_write(uint64_t off, bufferlist &bl, bool buffered, int w
   auto o = off;
   size_t idx = 0;
   do {
-    auto r = ::pwritev(choose_fd(buffered, write_hint),
-      &iov[idx], iov.size() - idx, o);
+    ssize_t r;
+    if (is_smr()) {
+      // buffered io is not supported on zns
+      void* buf = iov[idx].iov_base;
+      bool temp_alloc = false;
+      if (((uint64_t)buf % block_size) > 0) {
+        void* temp = aligned_alloc(block_size, iov[idx].iov_len);
+        memcpy(temp, buf, iov[idx].iov_len);
+        temp_alloc = true;
+        buf = temp;
+      }
+      r = ::pwrite(choose_fd(false, write_hint),
+        buf, iov[idx].iov_len, o);
+      if (temp_alloc) {
+        free(buf);
+      }
 
-    if (r < 0) {
-      r = -errno;
-      derr << __func__ << " pwritev error: " << cpp_strerror(r) << dendl;
-      return r;
+      if (r < 0) {
+        r = -errno;
+        derr << __func__ << " pwrite error: " << cpp_strerror(r) << dendl;
+        ceph_assert(false);
+        return r;
+      }
+    } else {
+      r = ::pwritev(choose_fd(buffered, write_hint),
+          &iov[idx], iov.size() - idx, o);
+
+      if (r < 0) {
+        r = -errno;
+        derr << __func__ << " pwritev error: " << cpp_strerror(r) << dendl;
+        ceph_assert(false);
+        return r;
+      }
     }
+
     o += r;
     left -= r;
     if (left) {
@@ -920,12 +951,13 @@ int KernelDevice::_sync_write(uint64_t off, bufferlist &bl, bool buffered, int w
   } while (left);
 
 #ifdef HAVE_SYNC_FILE_RANGE
-  if (buffered) {
+  if (buffered && !is_smr()) {
     // initiate IO and wait till it completes
     auto r = ::sync_file_range(fd_buffereds[WRITE_LIFE_NOT_SET], off, len, SYNC_FILE_RANGE_WRITE|SYNC_FILE_RANGE_WAIT_AFTER|SYNC_FILE_RANGE_WAIT_BEFORE);
     if (r < 0) {
       r = -errno;
       derr << __func__ << " sync_file_range error: " << cpp_strerror(r) << dendl;
+      ceph_assert(false);
       return r;
     }
   }

@@ -4686,6 +4686,12 @@ options:
   desc: latency profile
   default: 256
   with_legacy: true
+- name: bluestore_zns_fs
+  type: bool
+  level: advanced
+  desc: latency profile
+  default: false
+  with_legacy: true
 - name: bluestore_zns_multi_qd_submit
   type: bool
   level: advanced

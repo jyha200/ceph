@@ -62,10 +62,18 @@ static void hmsmr_cb(void* priv, void* priv2)
     }
   }
 
-  if (ioc->num_pending == 0 && ioc->num_running == 0) {
-    casted_priv->cb(casted_priv->cbpriv, ioc->priv);
-    ioc->pending_aios.clear();
-    ioc->post_addrs.clear();
+  if (ioc->num_pending == 0) {
+    if (ioc->priv != nullptr) {
+      if (ioc->num_running == 0) {
+        casted_priv->cb(casted_priv->cbpriv, ioc->priv);
+      }
+    } else {
+      ioc->try_aio_wake();
+    }
+    if (ioc->num_running == 0) {
+      ioc->pending_aios.clear();
+      ioc->post_addrs.clear();
+    }
   }
 }
 

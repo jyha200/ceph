@@ -29,6 +29,7 @@ class ZonedAllocator : public Allocator {
   // because eventually ZONE_APPEND support will land and
   // atomic_alloc_and_submit_lock will be removed.
   ceph::mutex lock = ceph::make_mutex("ZonedAllocator::lock");
+  uint64_t RESERVE_FOR_ZNS_FS = 1;
 
   uint64_t size;
   uint64_t conventional_size, sequential_size;
@@ -38,6 +39,8 @@ class ZonedAllocator : public Allocator {
   uint64_t first_seq_zone_num;
   uint64_t starting_zone_num;
   uint64_t num_zones;
+  uint64_t reserved_zone_for_fs;
+  uint64_t num_available_zones;
   std::atomic<uint32_t> cleaning_zone = -1;
   std::vector<zone_state_t> zone_states;
 

@@ -196,7 +196,10 @@ BlueFS::BlueFS(CephContext* cct)
   discard_cb[BDEV_DB] = db_discard_cb;
   discard_cb[BDEV_SLOW] = slow_discard_cb;
   asok_hook = SocketHook::create(this);
-
+  zns_fs = cct->_conf->bluestore_zns_fs;
+  if (zns_fs) {
+    last_written = NUM_ZNS_MODE_SUPER_BLOCK - 1;
+  }
 }
 
 BlueFS::~BlueFS()
@@ -362,7 +365,11 @@ int BlueFS::add_block_device(unsigned id, const string& path, bool trim,
     shared_alloc = _shared_alloc;
     alloc[id] = shared_alloc->a;
     shared_alloc_id = id;
+    if (b->is_smr()) {
+      zone_size = b->get_zone_size();
+    }
   }
+
   return 0;
 }
 
@@ -512,7 +519,8 @@ int BlueFS::mkfs(uuid_d osd_uuid, const bluefs_layout_t& layout)
   int r = _allocate(
     vselector->select_prefer_bdev(log_file->vselector_hint),
     cct->_conf->bluefs_max_log_runway,
-    &log_file->fnode);
+    &log_file->fnode,
+    0);
   vselector->add_usage(log_file->vselector_hint, log_file->fnode);
   ceph_assert(r == 0);
   log_writer = _create_writer(log_file);
@@ -928,10 +936,20 @@ int BlueFS::_write_super(int dev)
   ceph_assert_always(bl.length() <= get_super_length());
   bl.append_zero(get_super_length() - bl.length());
 
-  bdev[dev]->write(get_super_offset(), bl, false, WRITE_LIFE_SHORT);
+  unsigned super_offset;
+
+  if (zns_fs) {
+    uint64_t sb_idx = ++last_written % NUM_ZNS_MODE_SUPER_BLOCK;
+    uint64_t zone = get_sb_zone(sb_idx);
+    bdev[dev]->reset_zone(zone);
+    super_offset = get_super_offset(sb_idx);
+  } else {
+    super_offset = get_super_offset();
+  }
+  bdev[dev]->write(super_offset, bl, false, WRITE_LIFE_SHORT);
   dout(20) << __func__ << " v " << super.version
            << " crc 0x" << std::hex << crc
-           << " offset 0x" << get_super_offset() << std::dec
+           << " offset 0x" << super_offset << std::dec
            << dendl;
   return 0;
 }
@@ -943,6 +961,42 @@ int BlueFS::_open_super()
   bufferlist bl;
   uint32_t expected_crc, crc;
   int r;
+
+  if (zns_fs) {
+    super.version = 0;
+    bluefs_super_t temp_super;
+    for (int i = 0 ; i < NUM_ZNS_MODE_SUPER_BLOCK; i++) {
+      r = bdev[BDEV_DB]->read(get_super_offset(i), get_super_length(),
+          &bl, ioc[BDEV_DB], false);
+      if (r < 0)
+        return r;
+      auto p = bl.cbegin();
+      decode(temp_super, p);
+      {
+        bufferlist t;
+        t.substr_of(bl, 0, p.get_off());
+        crc = t.crc32c(-1);
+      }
+      decode(expected_crc, p);
+      if (crc == expected_crc) {
+        if (super.version < temp_super.version) {
+          p = bl.cbegin();
+          decode(super, p);
+          last_written = i;
+        }
+      }
+    }
+
+    // Couldn't find valid super block
+    if (super.version == 0) {
+      derr << __func__ << " bad crc on superblock, expected 0x"
+        << std::hex << expected_crc << " != actual 0x" << crc << std::dec
+        << dendl;
+      return -EIO;
+    }
+
+    return 0;
+  }
 
   // always the second block
   r = bdev[BDEV_DB]->read(get_super_offset(), get_super_length(),
@@ -2517,7 +2571,8 @@ int BlueFS::_flush_and_sync_log(std::unique_lock<ceph::mutex>& l,
     int r = _allocate(
       vselector->select_prefer_bdev(log_writer->file->vselector_hint),
       cct->_conf->bluefs_max_log_runway,
-      &log_writer->file->fnode);
+      &log_writer->file->fnode,
+      0);
     ceph_assert(r == 0);
     vselector->add_usage(log_writer->file->vselector_hint, log_writer->file->fnode);
     log_t.op_file_update(log_writer->file->fnode);
@@ -2720,7 +2775,20 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
   // do not bother to dirty the file if we are overwriting
   // previously allocated extents.
 
-  if (allocated < offset + length) {
+  if (zns_fs && h->file->fnode.ino != 1) {
+    int r = _allocate(vselector->select_prefer_bdev(h->file->vselector_hint),
+        length,
+        &h->file->fnode, offset);
+    if (r < 0) {
+      derr << __func__ << " allocated: 0x" << std::hex << allocated
+        << " offset: 0x" << offset << " length: 0x" << length << std::dec
+        << dendl;
+      vselector->add_usage(h->file->vselector_hint, h->file->fnode); // undo
+      ceph_abort_msg("bluefs enospc");
+      return r;
+    }
+    h->file->is_dirty = true;
+  } else if (allocated < offset + length) {
     // we should never run out of log space here; see the min runway check
     // in _flush_and_sync_log.
     ceph_assert(h->file->fnode.ino != 1);
@@ -3046,21 +3114,29 @@ int BlueFS::_allocate_without_fallback(uint8_t id, uint64_t len,
 }
 
 int BlueFS::_allocate(uint8_t id, uint64_t len,
-		      bluefs_fnode_t* node)
+		      bluefs_fnode_t* node, uint64_t offset)
 {
   dout(10) << __func__ << " len 0x" << std::hex << len << std::dec
-           << " from " << (int)id << dendl;
+           << " from " << (int)id << " off 0x" << std::hex << offset << dendl;
   ceph_assert(id < alloc.size());
   int64_t alloc_len = 0;
   PExtentVector extents;
   uint64_t hint = 0;
   int64_t need = len;
+  auto aligned_offset = (offset / alloc_size[id]) * alloc_size[id];
+  auto diff = offset - aligned_offset;
   if (alloc[id]) {
+    if (zns_fs) {
+      len += diff;
+    }
     need = round_up_to(len, alloc_size[id]);
     if (!node->extents.empty() && node->extents.back().bdev == id) {
       hint = node->extents.back().end();
     }   
     extents.reserve(4);  // 4 should be (more than) enough for most allocations
+    if (zns_fs && node->ino == 1) {
+      hint = ZNS_FS_LOG_FILE;
+    }
     alloc_len = alloc[id]->allocate(need, alloc_size[id], hint, &extents);
   }
   if (alloc_len < 0 || alloc_len < need) {
@@ -3086,7 +3162,7 @@ int BlueFS::_allocate(uint8_t id, uint64_t len,
       dout(20) << __func__ << " fallback to bdev "
 	       << (int)id + 1
 	       << dendl;
-      return _allocate(id + 1, len, node);
+      return _allocate(id + 1, len, node, offset);
     } else {
       derr << __func__ << " allocation failed, needed 0x" << std::hex << need
            << dendl;
@@ -3103,10 +3179,15 @@ int BlueFS::_allocate(uint8_t id, uint64_t len,
     }
   }
 
-  for (auto& p : extents) {
-    node->append_extent(bluefs_extent_t(id, p.offset, p.length));
+  if (zns_fs) {
+    ceph_assert(offset < 0xFFFFFFFFFFFFFFFFUL);
+    node->replace_or_insert_extents(id, aligned_offset, extents, pending_release);
+  } else {
+    for (auto& p : extents) {
+      node->append_extent(bluefs_extent_t(id, p.offset, p.length));
+    }
   }
-   
+
   return 0;
 }
 

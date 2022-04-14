@@ -87,6 +87,69 @@ struct bluefs_fnode_t {
     DENC_FINISH(p);
   }
 
+  void replace_or_insert_extents(
+    int id,
+    uint64_t new_offset,
+    PExtentVector& new_extents,
+    std::vector<interval_set<uint64_t>>& to_release) {
+    uint64_t start = 0;
+    mempool::bluefs::vector<bluefs_extent_t> to_replace;
+    auto iter = extents.begin();
+    for (; iter != extents.end() ; ++iter) {
+      if (start + iter->length >= new_offset) {
+        auto size = new_offset - start;
+        if (size > 0) {
+          to_replace.push_back(
+            bluefs_extent_t(iter->bdev, iter->offset, size));
+          if (iter->length - size > 0) {
+            to_release[iter->bdev].insert(iter->offset + size, iter->length - size);
+          }
+          start += size;
+        }
+        break;
+      }
+      to_replace.push_back(bluefs_extent_t(id, iter->offset, iter->length));
+      start += iter->length;
+    }
+    ceph_assert(start == new_offset);
+
+    auto end = new_offset;
+    for (auto new_extent : new_extents) {
+      to_replace.push_back(
+        bluefs_extent_t(id, new_extent.offset, new_extent.length));
+      end += new_extent.length;
+    }
+
+    if (iter != extents.end()) {
+      ++iter;
+      for (; iter != extents.end() ; ++iter) {
+        if (end < start + iter->length) {
+          if (end > start) {
+            auto removal_size = end - start;
+            to_replace.push_back(
+              bluefs_extent_t(
+                iter->bdev,
+                iter->offset + removal_size,
+                iter->length - removal_size));
+            to_release[iter->bdev].insert(iter->offset, removal_size);
+          } else {
+            to_replace.push_back(*iter);
+          }
+        } else {
+          to_release[iter->bdev].insert(iter->offset, iter->length);
+        }
+        start += iter->length;
+      }
+    }
+
+    // TODO implement with minimal copy
+    extents = to_replace;
+
+    if (allocated < end) {
+      allocated = end;
+    }
+  }
+
   void append_extent(const bluefs_extent_t& ext) {
     if (!extents.empty() &&
 	extents.back().end() == ext.offset &&

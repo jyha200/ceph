@@ -5599,19 +5599,23 @@ int BlueStore::_create_alloc()
 
 #ifdef HAVE_LIBZBD
   if (freelist_type == "zoned") {
-    Allocator *a = Allocator::create(
-      cct, cct->_conf->bluestore_allocator,
-      bdev->get_conventional_region_size(),
-      alloc_size,
-      0, 0,
-      "zoned_block");
-    if (!a) {
-      lderr(cct) << __func__ << " failed to create " << cct->_conf->bluestore_allocator
-		 << " allocator" << dendl;
-      delete alloc;
-      return -EINVAL;
+    if (cct->_conf->bluestore_zns_fs) {
+      shared_alloc.set(alloc);
+    } else {
+      Allocator *a = Allocator::create(
+        cct, cct->_conf->bluestore_allocator,
+        bdev->get_conventional_region_size(),
+        alloc_size,
+        0, 0,
+        "zoned_block");
+      if (!a) {
+        lderr(cct) << __func__ << " failed to create " << cct->_conf->bluestore_allocator
+          << " allocator" << dendl;
+        delete alloc;
+        return -EINVAL;
+      }
+      shared_alloc.set(a);
     }
-    shared_alloc.set(a);
   } else
 #endif
   {
@@ -5666,14 +5670,15 @@ int BlueStore::_init_alloc(std::map<uint64_t, uint64_t> *zone_adjustments)
     }
 
     // start with conventional zone "free" (bluefs may adjust this when it starts up)
-    auto reserved = _get_ondisk_reserved();
-    // for now we require a conventional zone
-    ceph_assert(bdev->get_conventional_region_size());
-    ceph_assert(shared_alloc.a != alloc);  // zoned allocator doesn't use conventional region
-    shared_alloc.a->init_add_free(
-      reserved,
-      p2align(bdev->get_conventional_region_size(), min_alloc_size) - reserved);
-
+    if (cct->_conf->bluestore_zns_fs != true) {
+      auto reserved = _get_ondisk_reserved();
+      // for now we require a conventional zone
+      ceph_assert(bdev->get_conventional_region_size());
+      ceph_assert(shared_alloc.a != alloc);  // zoned allocator doesn't use conventional region
+      shared_alloc.a->init_add_free(
+          reserved,
+          p2align(bdev->get_conventional_region_size(), min_alloc_size) - reserved);
+    }
     // init sequential zone based on the device's write pointers
     a->init_from_zone_pointers(std::move(zones));
     dout(1) << __func__
@@ -5987,7 +5992,8 @@ int BlueStore::_minimal_open_bluefs(bool create)
 
   // shared device
   bfn = path + "/block";
-  if (cct->_conf->contains("bluestore_cns_path")) {
+  if (cct->_conf->contains("bluestore_cns_path") &&
+    cct->_conf->bluestore_zns_fs == false) {
     bfn = cct->_conf->bluestore_cns_path;
   }
   // never trim here
@@ -6853,7 +6859,8 @@ int BlueStore::mkfs()
     freelist_type = "zoned";
     zone_size = bdev->get_zone_size();
 		if (cct->_conf->contains("bluestore_cns_path")) {
-			first_sequential_zone = 1;
+      // reserve 2 zones for blueof superblock, 1 zones for MBR
+			first_sequential_zone = 3;
 		}
 		else {
 	    first_sequential_zone = bdev->get_conventional_region_size() / zone_size;
@@ -9454,11 +9461,13 @@ int BlueStore::_fsck_on_open(BlueStore::FSCKDepth depth, bool repair)
 	    offset, length, alloc_size, used_blocks,
 	    [&](uint64_t pos, mempool_dynamic_bitset &bs) {
 	      if (bs.test(pos)) {
+#if 0
 		derr << "fsck error: zone 0x" << std::hex << zone
 		     << " has used space at 0x" << pos * alloc_size
 		     << " beyond write pointer 0x" << wp
 		     << std::dec << dendl;
 		intersects = true;
+#endif
 	      } else {
 		bs.set(pos);
 	      }
@@ -9491,11 +9500,13 @@ int BlueStore::_fsck_on_open(BlueStore::FSCKDepth depth, bool repair)
 		   << std::dec << dendl;
 	  // cross-check dead bytes against zone state
 	  if (a->get_dead_bytes(zone) != zone_dead) {
+      #if 0
 	    derr << "fsck error: zone 0x" << std::hex << zone << " has 0x" << zone_dead
 		 << " dead bytes but freelist says 0x" << a->get_dead_bytes(zone)
 		 << dendl;
 	    ++errors;
 	    // TODO: repair
+#endif
 	  }
 	}
 	used_blocks.flip();
