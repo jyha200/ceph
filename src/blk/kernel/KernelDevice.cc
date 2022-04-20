@@ -880,7 +880,7 @@ void KernelDevice::aio_submit(IOContext *ioc)
 int KernelDevice::_sync_write(uint64_t off, bufferlist &bl, bool buffered, int write_hint)
 {
   uint64_t len = bl.length();
-  dout(5) << __func__ << " 0x" << std::hex << off << "~" << len
+  dout(1) << __func__ << " 0x" << std::hex << off << "~" << len
 	  << std::dec << " " << buffermode(buffered) << dendl;
   if (cct->_conf->bdev_inject_crash &&
       rand() % cct->_conf->bdev_inject_crash == 0) {
@@ -899,25 +899,29 @@ int KernelDevice::_sync_write(uint64_t off, bufferlist &bl, bool buffered, int w
     ssize_t r;
     if (is_smr()) {
       // buffered io is not supported on zns
-      void* buf = iov[idx].iov_base;
+      uint8_t* buf = static_cast<uint8_t*>(iov[idx].iov_base);
       bool temp_alloc = false;
-      if (((uint64_t)buf % block_size) > 0) {
-        void* temp = aligned_alloc(block_size, iov[idx].iov_len);
-        memcpy(temp, buf, iov[idx].iov_len);
+      if (((uint64_t)buf % block_size) > 0 || iov[idx].iov_len < left) {
+        uint8_t* temp = static_cast<uint8_t*>(aligned_alloc(block_size, left));
+        uint64_t local_left = left;
+        uint64_t local_idx = idx;
+        uint64_t local_o = 0;
+        while (local_left > 0) {
+          memcpy(temp + local_o, iov[local_idx].iov_base, iov[local_idx].iov_len);
+          local_o += iov[local_idx].iov_len;
+          local_left -= iov[local_idx].iov_len;
+          local_idx++;
+        }
         temp_alloc = true;
         buf = temp;
       }
-      r = ::pwrite(choose_fd(false, write_hint),
-        buf, iov[idx].iov_len, o);
+
+      dout(10) << __func__ << " " << __LINE__ << " buf 0x" << std::hex << buf
+        << " len 0x" << " off 0x"<< o << dendl;
+      r = ::pwrite(choose_fd(false, write_hint), buf, left, o);
+
       if (temp_alloc) {
         free(buf);
-      }
-
-      if (r < 0) {
-        r = -errno;
-        derr << __func__ << " pwrite error: " << cpp_strerror(r) << dendl;
-        ceph_assert(false);
-        return r;
       }
     } else {
       r = ::pwritev(choose_fd(buffered, write_hint),

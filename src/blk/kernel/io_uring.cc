@@ -74,6 +74,7 @@ struct nvme_io_command_t {
 struct uring_priv_t {
   nvme_io_command_t io_cmd = {0,};
   aio_t* aio;
+  void* tmp_buf = nullptr;
 };
 
 // TODO replace self definition to that of liburing library
@@ -103,6 +104,9 @@ static int ioring_get_cqe(struct ioring_data *d, unsigned int max,
         }
       }
       cqe->res = io->length;
+      if (uring_priv->tmp_buf != nullptr) {
+        free(uring_priv->tmp_buf);
+      }
       delete uring_priv;
     } else {
       io = (struct aio_t *)(uintptr_t) io_uring_cqe_get_data(cqe);
@@ -173,6 +177,35 @@ static void create_io_command(
   io_cmd->rw.nlb = length / BLK_SIZE - 1;
 }
 
+static void create_io_command2(
+  nvme_io_command_t *io_cmd,
+  nvme_io_command_t::opcode opcode,
+  uint64_t offset,
+  uint64_t length,
+  boost::container::small_vector<iovec,4>& iov,
+  uring_priv_t* uring_priv)
+{
+  io_cmd->common.opcode = static_cast<uint8_t>(opcode);
+  // TODO need to set real nsid
+  io_cmd->common.nsid = 1;
+  void* buf = iov[0].iov_base;
+  if (iov.size() > 1) {
+    uint8_t* tmp_buf = static_cast<uint8_t*>(aligned_alloc(BLK_SIZE, length));
+    uint64_t offset = 0;
+    for (auto& iovec : iov) {
+      memcpy(tmp_buf + offset, iovec.iov_base, iovec.iov_len);
+      offset += iovec.iov_len;
+    }
+
+    uring_priv->tmp_buf = tmp_buf;
+    buf = tmp_buf;
+  }
+  io_cmd->common.addr = reinterpret_cast<uint64_t>(buf);
+  io_cmd->common.data_len = length;
+  io_cmd->rw.slba = offset / BLK_SIZE;
+  io_cmd->rw.nlb = length / BLK_SIZE - 1;
+}
+
 static void create_read_command(
   io_uring_sqe *sqe,
   int fd,
@@ -197,15 +230,13 @@ static void create_write_command(
   aio_t *io,
   uring_priv_t *uring_priv)
 {
-  // No vector support for append
-  ceph_assert(io->iov.size() == 1);
-
-  create_io_command(
+  create_io_command2(
     &uring_priv->io_cmd,
     nvme_io_command_t::opcode::WRITE,
     io->offset,
     io->length,
-    io->iov[0].iov_base);
+    io->iov,
+    uring_priv);
 
   create_passthrough_command(sqe, fd, uring_priv);
 }
@@ -219,12 +250,13 @@ static void create_append_command(
   // No vector support for append
   ceph_assert(io->iov.size() == 1);
 
-  create_io_command(
+  create_io_command2(
     &uring_priv->io_cmd,
     nvme_io_command_t::opcode::APPEND,
     io->offset,
     io->length,
-    io->iov[0].iov_base);
+    io->iov,
+    uring_priv);
 
   create_passthrough_command(sqe, fd, uring_priv);
 }
@@ -242,6 +274,7 @@ static void init_sqe(struct ioring_data *d, struct io_uring_sqe *sqe,
     uring_priv->aio = io;
     priv = uring_priv;
     if (io->iocb.aio_lio_opcode == IO_CMD_PWRITEV) {
+      ldout(d->cct, 20) << __func__ << " offset " << io->offset << " len " << io->length <<dendl;
       if (d->use_append) {
         create_append_command(sqe, fixed_fd, io, uring_priv);
       } else {

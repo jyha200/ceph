@@ -17,8 +17,6 @@
 #include "include/ceph_assert.h"
 #include "bluestore_types.h"
 
-static const int64_t ZNS_FS_LOG_FILE = 0xFFFFFABCD;
-
 class Allocator {
 public:
   Allocator(std::string_view name,

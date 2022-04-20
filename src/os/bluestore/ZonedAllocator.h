@@ -29,7 +29,10 @@ class ZonedAllocator : public Allocator {
   // because eventually ZONE_APPEND support will land and
   // atomic_alloc_and_submit_lock will be removed.
   ceph::mutex lock = ceph::make_mutex("ZonedAllocator::lock");
-  uint64_t RESERVE_FOR_ZNS_FS = 1;
+public:
+  static const uint64_t RESERVE_FOR_ZNS_FS = 256;
+private:
+  uint64_t zone_to_assign_for_zns_fs = 0;
 
   uint64_t size;
   uint64_t conventional_size, sequential_size;

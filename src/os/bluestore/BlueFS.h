@@ -108,7 +108,6 @@ public:
 
   struct File : public RefCountedObject {
     MEMPOOL_CLASS_HELPERS();
-
     bluefs_fnode_t fnode;
     int refs;
     uint64_t dirty_seq;
@@ -308,7 +307,14 @@ private:
 
   PerfCounters *logger = nullptr;
   bool zns_fs = false;
+  std::mutex zone_lock;
+  uint64_t cur_log_addr = 0;
   static const int NUM_ZNS_MODE_SUPER_BLOCK = 2;
+  static const uint64_t FIRST_LOG_ZONE = NUM_ZNS_MODE_SUPER_BLOCK + 1;
+  static const uint64_t LOG_ZONE_COUNT = 256;
+  uint64_t get_meta_addr(uint64_t need);
+  uint64_t get_meta_zone_addr(uint64_t need);
+
   std::atomic_int last_written;
   uint64_t zone_size = -1;
 
@@ -478,6 +484,8 @@ private:
       return 4096;
     }
   }
+
+  uint64_t get_next_meta_zone();
   unsigned get_super_length() {
     return 4096;
   }

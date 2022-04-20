@@ -53,6 +53,7 @@ ZonedAllocator::ZonedAllocator(CephContext* cct,
   num_available_zones = num_zones;
   if (cct->_conf->bluestore_zns_fs) {
     reserved_zone_for_fs = first_seq_zone_num;
+    zone_to_assign_for_zns_fs = reserved_zone_for_fs;
     first_seq_zone_num += RESERVE_FOR_ZNS_FS;
     num_available_zones = num_zones - RESERVE_FOR_ZNS_FS;
   }
@@ -82,13 +83,6 @@ int64_t ZonedAllocator::allocate(
   std::lock_guard l(lock);
 
   ceph_assert(want_size % block_size == 0);
-  if (hint == ZNS_FS_LOG_FILE) {
-    ceph_assert(want_size < zone_size * RESERVE_FOR_ZNS_FS);
-    extents->emplace_back(bluestore_pextent_t(get_offset(reserved_zone_for_fs), want_size));
-    ldout(cct, 1) << " trying to allocate 0x"
-      << std::hex << want_size << std::dec << " for ZNS_FS"<< dendl;
-    return want_size;
-  }
 
   ldout(cct, 10) << " trying to allocate 0x"
 		 << std::hex << want_size << std::dec << dendl;
@@ -113,6 +107,8 @@ int64_t ZonedAllocator::allocate(
     }
 
     extents->emplace_back(bluestore_pextent_t(offset, target_size));
+  ldout(cct, 10) << " allocated 0x"
+		 << std::hex << offset << " len 0x" << target_size << std::dec << dendl;
     remaining_size -= target_size;
     last_visited_idx++;
   }
