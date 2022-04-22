@@ -282,6 +282,8 @@ static void init_sqe(struct ioring_data *d, struct io_uring_sqe *sqe,
       }
     } else if (io->iocb.aio_lio_opcode == IO_CMD_PREADV) {
       create_read_command(sqe, fixed_fd, io, uring_priv);
+    } else if (io->iocb.aio_lio_opcode == IO_CMD_LEGACY_WRITE) {
+        create_write_command(sqe, fixed_fd, io, uring_priv);
     } else {
       ceph_assert(0);
     }

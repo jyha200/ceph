@@ -17,6 +17,9 @@
 #include "include/ceph_assert.h"
 #include "bluestore_types.h"
 
+static const int64_t BLUEFS_ZNS_FS = 0x77FFFFFF;
+static const int64_t BLUEFS_ZNS_DATA = 0x76FFFFFF;
+
 class Allocator {
 public:
   Allocator(std::string_view name,

@@ -2376,221 +2376,74 @@ void BlueFS::_compact_log_async(std::unique_lock<ceph::mutex>& l)
   }
 
   vselector->sub_usage(log_file->vselector_hint, log_file->fnode);
-  if (zns_fs) {
-    // 1. allocate new log space and jump to it.
-    old_log_jump_to = log_file->fnode.get_allocated();
-    dout(1) << __func__ << " old_log_jump_to 0x" << std::hex << old_log_jump_to
-      << " need 0x" << (old_log_jump_to + cct->_conf->bluefs_max_log_runway) << std::dec << dendl;
-    int r = _allocate(vselector->select_prefer_bdev(log_file->vselector_hint),
-        cct->_conf->bluefs_max_log_runway,
-        &log_file->fnode, old_log_jump_to);
-    ceph_assert(r == 0);
-    //adjust usage as flush below will need it
-    vselector->add_usage(log_file->vselector_hint, log_file->fnode);
-    dout(1) << __func__ << " log extents " << log_file->fnode.extents << dendl;
 
-    // update the log file change and log a jump to the offset where we want to
-    // write the new entries
-    log_t.op_file_update(log_file->fnode);
-    log_t.op_jump(log_seq, old_log_jump_to);
+  // 1. allocate new log space and jump to it.
+  old_log_jump_to = log_file->fnode.get_allocated();
+  dout(10) << __func__ << " old_log_jump_to 0x" << std::hex << old_log_jump_to
+           << " need 0x" << (old_log_jump_to + cct->_conf->bluefs_max_log_runway) << std::dec << dendl;
+  int r = _allocate(vselector->select_prefer_bdev(log_file->vselector_hint),
+		    cct->_conf->bluefs_max_log_runway,
+                    &log_file->fnode,
+                    old_log_jump_to);
+  ceph_assert(r == 0);
+  //adjust usage as flush below will need it
+  vselector->add_usage(log_file->vselector_hint, log_file->fnode);
+  dout(10) << __func__ << " log extents " << log_file->fnode.extents << dendl;
 
-    flush_bdev();  // FIXME?
+  // update the log file change and log a jump to the offset where we want to
+  // write the new entries
+  log_t.op_file_update(log_file->fnode);
+  log_t.op_jump(log_seq, old_log_jump_to);
 
-    _flush_and_sync_log(l, 0, old_log_jump_to);
+  flush_bdev();  // FIXME?
 
-    // 2. prepare compacted log
-    bluefs_transaction_t t;
-    //avoid record two times in log_t and _compact_log_dump_metadata.
-    log_t.clear();
-    _compact_log_dump_metadata(&t, 0);
+  _flush_and_sync_log(l, 0, old_log_jump_to);
 
-    uint64_t max_alloc_size = std::max(alloc_size[BDEV_WAL],
-        std::max(alloc_size[BDEV_DB],
-          alloc_size[BDEV_SLOW]));
+  // 2. prepare compacted log
+  bluefs_transaction_t t;
+  //avoid record two times in log_t and _compact_log_dump_metadata.
+  log_t.clear();
+  _compact_log_dump_metadata(&t, 0);
 
-    // conservative estimate for final encoded size
-    new_log_jump_to = round_up_to(t.op_bl.length() + super.block_size * 2,
-        max_alloc_size);
-    t.op_jump(log_seq, new_log_jump_to);
+  uint64_t max_alloc_size = std::max(alloc_size[BDEV_WAL],
+				     std::max(alloc_size[BDEV_DB],
+					      alloc_size[BDEV_SLOW]));
 
-    // allocate
-    //FIXME: check if we want DB here?
-    r = _allocate(BlueFS::BDEV_DB, new_log_jump_to,
-        &new_log->fnode, 0);
-    ceph_assert(r == 0);
+  // conservative estimate for final encoded size
+  new_log_jump_to = round_up_to(t.op_bl.length() + super.block_size * 2,
+                                max_alloc_size);
+  t.op_jump(log_seq, new_log_jump_to);
 
-    // we might have some more ops in log_t due to _allocate call
-    t.claim_ops(log_t);
+  // allocate
+  //FIXME: check if we want DB here?
+  r = _allocate(BlueFS::BDEV_DB, new_log_jump_to,
+                    &new_log->fnode, 0);
+  ceph_assert(r == 0);
 
-    bufferlist bl;
-    encode(t, bl);
-    _pad_bl(bl);
+  // we might have some more ops in log_t due to _allocate call
+  t.claim_ops(log_t);
 
-    dout(10) << __func__ << " new_log_jump_to 0x" << std::hex << new_log_jump_to
-      << std::dec << dendl;
+  bufferlist bl;
+  encode(t, bl);
+  _pad_bl(bl);
 
-    new_log_writer = _create_writer(new_log);
-    new_log_writer->append(bl);
+  dout(10) << __func__ << " new_log_jump_to 0x" << std::hex << new_log_jump_to
+	   << std::dec << dendl;
 
-    // 3. flush
-    r = _flush(new_log_writer, true);
-    ceph_assert(r == 0);
+  new_log_writer = _create_writer(new_log);
+  new_log_writer->append(bl);
 
-    // 4. wait
-    _flush_bdev_safely(new_log_writer);
+  // 3. flush
+  r = _flush(new_log_writer, true);
+  ceph_assert(r == 0);
 
-    // 5. update our log fnode
-    // discard first old_log_jump_to extents
-
-    dout(1) << __func__ << " remove 0x" << std::hex << old_log_jump_to << std::dec
-      << " of " << log_file->fnode.extents << dendl;
-    uint64_t discarded = 0;
-    mempool::bluefs::vector<bluefs_extent_t> old_extents;
-    while (discarded < old_log_jump_to) {
-      ceph_assert(!log_file->fnode.extents.empty());
-      bluefs_extent_t& e = log_file->fnode.extents.front();
-      bluefs_extent_t temp = e;
-      if (discarded + e.length <= old_log_jump_to) {
-        dout(1) << __func__ << " remove old log extent " << e << dendl;
-        discarded += e.length;
-        log_file->fnode.pop_front_extent();
-      } else {
-        dout(1) << __func__ << " remove front of old log extent " << e << dendl;
-        uint64_t drop = old_log_jump_to - discarded;
-        temp.length = drop;
-        e.offset += drop;
-        e.length -= drop;
-        discarded += drop;
-        dout(1) << __func__ << "   kept " << e << " removed " << temp << dendl;
-      }
-      old_extents.push_back(temp);
-    }
-    auto from = log_file->fnode.extents.begin();
-    auto to = log_file->fnode.extents.end();
-    while (from != to) {
-      new_log->fnode.append_extent(*from);
-      ++from;
-    }
-
-    vselector->sub_usage(log_file->vselector_hint, log_file->fnode);
-
-    // clear the extents from old log file, they are added to new log
-    dout(1) << __func__ << " log fnode " << log_file->fnode << dendl;
-    log_file->fnode.clear_extents();
-    // swap the log files. New log file is the log file now.
-    new_log->fnode.swap_extents(log_file->fnode);
-
-    log_writer->pos = log_writer->file->fnode.size =
-      log_writer->pos - old_log_jump_to + new_log_jump_to;
-
-    vselector->add_usage(log_file->vselector_hint, log_file->fnode);
-
-    // 6. write the super block to reflect the changes
-    dout(10) << __func__ << " writing super" << dendl;
-    super.log_fnode = log_file->fnode;
-    ++super.version;
-    _write_super(BDEV_DB);
-
-    lock.unlock();
-    flush_bdev();
-    lock.lock();
-
-    // 7. release old space
-    dout(1) << __func__ << " release old log extents " << old_extents << dendl;
-    for (auto& r : old_extents) {
-      pending_release[r.bdev].insert(r.offset, r.length);
-      if (r.offset % zone_size == 0) {
-        uint64_t zone = r.offset / zone_size;
-        dout(1) << __func__ << " reset zone 0x" << std::hex << zone << std::dec << dendl;
-        bdev[BDEV_DB]->reset_zone(zone);
-      }
-    }
-
-    // delete the new log, remove from the dirty files list
-    _close_writer(new_log_writer);
-    if (new_log->dirty_seq) {
-      ceph_assert(dirty_files.count(new_log->dirty_seq));
-      auto it = dirty_files[new_log->dirty_seq].iterator_to(*new_log);
-      dirty_files[new_log->dirty_seq].erase(it);
-    }
-
-    new_log_writer = nullptr;
-    new_log = nullptr;
-    log_cond.notify_all();
-
-    dout(10) << __func__ << " log extents " << log_file->fnode.extents << dendl;
-    dout(10) << __func__ << " " << __LINE__ << " log fnode " << log_file->fnode << dendl;
-    logger->inc(l_bluefs_log_compactions);
-
-    return;
-  } else {
-    // 1. allocate new log space and jump to it.
-    old_log_jump_to = log_file->fnode.get_allocated();
-    dout(10) << __func__ << " old_log_jump_to 0x" << std::hex << old_log_jump_to
-      << " need 0x" << (old_log_jump_to + cct->_conf->bluefs_max_log_runway) << std::dec << dendl;
-    int r = _allocate(vselector->select_prefer_bdev(log_file->vselector_hint),
-        cct->_conf->bluefs_max_log_runway,
-        &log_file->fnode, old_log_jump_to);
-    ceph_assert(r == 0);
-    //adjust usage as flush below will need it
-    vselector->add_usage(log_file->vselector_hint, log_file->fnode);
-    dout(10) << __func__ << " log extents " << log_file->fnode.extents << dendl;
-
-    // update the log file change and log a jump to the offset where we want to
-    // write the new entries
-    log_t.op_file_update(log_file->fnode);
-    log_t.op_jump(log_seq, old_log_jump_to);
-
-    flush_bdev();  // FIXME?
-
-    _flush_and_sync_log(l, 0, old_log_jump_to);
-
-    // 2. prepare compacted log
-    bluefs_transaction_t t;
-    //avoid record two times in log_t and _compact_log_dump_metadata.
-    log_t.clear();
-    _compact_log_dump_metadata(&t, 0);
-
-    uint64_t max_alloc_size = std::max(alloc_size[BDEV_WAL],
-        std::max(alloc_size[BDEV_DB],
-          alloc_size[BDEV_SLOW]));
-
-    // conservative estimate for final encoded size
-    new_log_jump_to = round_up_to(t.op_bl.length() + super.block_size * 2,
-        max_alloc_size);
-    t.op_jump(log_seq, new_log_jump_to);
-
-    // allocate
-    //FIXME: check if we want DB here?
-    r = _allocate(BlueFS::BDEV_DB, new_log_jump_to,
-        &new_log->fnode, 0);
-    ceph_assert(r == 0);
-
-    // we might have some more ops in log_t due to _allocate call
-    t.claim_ops(log_t);
-
-    bufferlist bl;
-    encode(t, bl);
-    _pad_bl(bl);
-
-    dout(1) << __func__ << " new_log_jump_to 0x" << std::hex << new_log_jump_to
-      << std::dec << dendl;
-
-    new_log_writer = _create_writer(new_log);
-    new_log_writer->append(bl);
-
-    // 3. flush
-    r = _flush(new_log_writer, true);
-    ceph_assert(r == 0);
-
-    // 4. wait
-    _flush_bdev_safely(new_log_writer);
-  }
+  // 4. wait
+  _flush_bdev_safely(new_log_writer);
 
   // 5. update our log fnode
   // discard first old_log_jump_to extents
 
-  dout(1) << __func__ << " remove 0x" << std::hex << old_log_jump_to << std::dec
+  dout(10) << __func__ << " remove 0x" << std::hex << old_log_jump_to << std::dec
 	   << " of " << log_file->fnode.extents << dendl;
   uint64_t discarded = 0;
   mempool::bluefs::vector<bluefs_extent_t> old_extents;
@@ -2623,7 +2476,6 @@ void BlueFS::_compact_log_async(std::unique_lock<ceph::mutex>& l)
   vselector->sub_usage(log_file->vselector_hint, log_file->fnode);
 
   // clear the extents from old log file, they are added to new log
-  dout(1) << __func__ << " log fnode " << log_file->fnode << dendl;
   log_file->fnode.clear_extents();
   // swap the log files. New log file is the log file now.
   new_log->fnode.swap_extents(log_file->fnode);
@@ -2644,8 +2496,16 @@ void BlueFS::_compact_log_async(std::unique_lock<ceph::mutex>& l)
   lock.lock();
 
   // 7. release old space
-  dout(1) << __func__ << " release old log extents " << old_extents << dendl;
+  dout(10) << __func__ << " release old log extents " << old_extents << dendl;
   for (auto& r : old_extents) {
+    if (zns_fs) {
+      if (r.offset % zone_size == 0) {
+        uint64_t zone = r.offset / zone_size;
+        dout(20) << __func__ << " reset zone 0x" << std::hex << zone << std::dec << dendl;
+        bdev[BDEV_DB]->reset_zone(zone);
+      }
+    }
+
     pending_release[r.bdev].insert(r.offset, r.length);
   }
 
@@ -2656,7 +2516,6 @@ void BlueFS::_compact_log_async(std::unique_lock<ceph::mutex>& l)
     auto it = dirty_files[new_log->dirty_seq].iterator_to(*new_log);
     dirty_files[new_log->dirty_seq].erase(it);
   }
-
   new_log_writer = nullptr;
   new_log = nullptr;
   log_cond.notify_all();
@@ -2752,7 +2611,6 @@ int BlueFS::_flush_and_sync_log(std::unique_lock<ceph::mutex>& l,
     bl.append_zero(realign);
 
   logger->inc(l_bluefs_logged_bytes, bl.length());
-  dout(1) << __func__ << " " << __LINE__ << " runway " << runway << " bl_len " << bl.length() << dendl; 
 
   if (just_expanded_log) {
     ceph_assert(bl.length() <= runway); // if we write this, we will have an unrecoverable data loss
@@ -3029,7 +2887,11 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
     if (cct->_conf->bluefs_sync_write) {
       bdev[p->bdev]->write(p->offset + x_off, t, buffered, h->write_hint);
     } else {
-      bdev[p->bdev]->aio_write(p->offset + x_off, t, h->iocv[p->bdev], buffered, h->write_hint);
+      if (zns_fs) {
+        bdev[p->bdev]->aio_legacy_write(p->offset + x_off, t, h->iocv[p->bdev], buffered, h->write_hint);
+      } else {
+        bdev[p->bdev]->aio_write(p->offset + x_off, t, h->iocv[p->bdev], buffered, h->write_hint);
+      }
     }
     h->dirty_devs[p->bdev] = true;
     if (p->bdev == BDEV_SLOW) {
@@ -3283,7 +3145,7 @@ uint64_t BlueFS::get_meta_addr(uint64_t need) {
   uint64_t allocated = cur_log_addr;
   cur_log_addr += need;
   allocated =  (allocated % (LOG_ZONE_COUNT * zone_size)) + FIRST_LOG_ZONE * zone_size;
-  dout(1) << __func__ << " allocated 0x" << std::hex << allocated
+  dout(10) << __func__ << " allocated 0x" << std::hex << allocated
     << " need 0x " << need << std::dec<< dendl;
   return allocated;
 }
@@ -3299,7 +3161,7 @@ uint64_t BlueFS::get_meta_zone_addr(uint64_t need) {
   uint64_t allocated = (cur_log_addr % (LOG_ZONE_COUNT * zone_size)) + FIRST_LOG_ZONE * zone_size;
   cur_log_addr += need;
 
-  dout(1) << __func__ << " allocated 0x" << std::hex << allocated
+  dout(10) << __func__ << " allocated 0x" << std::hex << allocated
     << " need 0x " << need << std::dec<< dendl;
   return allocated;
 }
@@ -3309,11 +3171,6 @@ int BlueFS::_allocate(uint8_t id, uint64_t len,
 {
   dout(10) << __func__ << " len 0x" << std::hex << len << std::dec
            << " from " << (int)id << " off 0x" << std::hex << offset << dendl;
-  if (node->ino <= 1) {
-  dout(1) << __func__ << " len 0x" << std::hex << len << std::dec
-           << " from " << (int)id << " off 0x" << std::hex << offset << " node " <<
-            *node <<dendl;
-}
   ceph_assert(id < alloc.size());
   int64_t alloc_len = 0;
   PExtentVector extents;
@@ -3341,6 +3198,9 @@ int BlueFS::_allocate(uint8_t id, uint64_t len,
       extents.push_back(bluestore_pextent_t(addr, need));
       alloc_len = need;
     } else {
+      if (zns_fs) {
+        hint = BLUEFS_ZNS_FS;
+      }
       alloc_len = alloc[id]->allocate(need, alloc_size[id], hint, &extents);
     }
   }

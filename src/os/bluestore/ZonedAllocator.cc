@@ -60,7 +60,8 @@ ZonedAllocator::ZonedAllocator(CephContext* cct,
   for (uint64_t i = 0 ; i < max_open_zone ; i++) {
     active_zones[i] = i + first_seq_zone_num;
   }
-  last_visited_idx = max_open_zone - 1;
+  last_visited_idx_fs = max_open_zone - 1;
+  last_visited_idx_data = max_open_zone - 1;
 }
 
 ZonedAllocator::~ZonedAllocator()
@@ -88,11 +89,20 @@ int64_t ZonedAllocator::allocate(
 		 << std::hex << want_size << std::dec << dendl;
   uint64_t remaining_size = want_size;
   while(remaining_size > 0) {
-    uint64_t target_idx = (last_visited_idx + 1) % max_open_zone;
+    uint64_t target_idx;
+    if (hint == BLUEFS_ZNS_FS) {
+      target_idx = (last_visited_idx_fs + 1) % open_zone_for_fs;
+    } else {
+      target_idx = (last_visited_idx_data + 1) % open_zone_for_data + open_zone_for_fs;
+    }
     uint64_t zone_num = active_zones[target_idx];
     if (zone_num == cleaning_zone) {
       select_other_zone(target_idx);
-      last_visited_idx++;
+      if (hint == BLUEFS_ZNS_FS) {
+        last_visited_idx_fs++;
+      } else {
+        last_visited_idx_data++;
+      }
       continue;
     }
     uint64_t target_size = remaining_size > interleaving_unit ? interleaving_unit : remaining_size;
@@ -110,7 +120,11 @@ int64_t ZonedAllocator::allocate(
   ldout(cct, 10) << " allocated 0x"
 		 << std::hex << offset << " len 0x" << target_size << std::dec << dendl;
     remaining_size -= target_size;
-    last_visited_idx++;
+    if (hint == BLUEFS_ZNS_FS) {
+      last_visited_idx_fs++;
+    } else {
+      last_visited_idx_data++;
+    }
   }
   return want_size;
 }

@@ -9,6 +9,7 @@
 #include "aio/aio.h"
 
 struct ioring_data;
+static const int IO_CMD_LEGACY_WRITE = IO_CMD_PWRITEV + 1;
 
 struct ioring_queue_t final : public io_queue_t {
   std::unique_ptr<ioring_data> d;

@@ -283,6 +283,15 @@ public:
     IOContext *ioc,
     bool buffered,
     int write_hint = WRITE_LIFE_NOT_SET) = 0;
+  virtual int aio_legacy_write(
+    uint64_t off,
+    ceph::buffer::list& bl,
+    IOContext *ioc,
+    bool buffered,
+    int write_hint = WRITE_LIFE_NOT_SET) {
+    return aio_write(off, bl, ioc, buffered, write_hint);
+  };
+
   virtual int flush() = 0;
   virtual int discard(uint64_t offset, uint64_t len) { return 0; }
   virtual int queue_discard(interval_set<uint64_t> &to_release) { return -1; }

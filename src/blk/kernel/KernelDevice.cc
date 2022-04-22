@@ -132,7 +132,8 @@ int KernelDevice::open(const string& p)
     ng_path = cct->_conf->bluestore_zns_ng_path;
     dout(1) << __func__ << " io to ng device" << ng_path << dendl;
     if (cct->_conf->bluestore_zns_postpone_db_transaction) {
-      if (cct->_conf->bluestore_zns_use_append) {
+      use_append = cct->_conf->bluestore_zns_use_append;
+      if (use_append) {
         alloc_submit_sync = cct->_conf->bluestore_zns_alloc_submit_sync;
       }
     }
@@ -880,7 +881,7 @@ void KernelDevice::aio_submit(IOContext *ioc)
 int KernelDevice::_sync_write(uint64_t off, bufferlist &bl, bool buffered, int write_hint)
 {
   uint64_t len = bl.length();
-  dout(1) << __func__ << " 0x" << std::hex << off << "~" << len
+  dout(5) << __func__ << " 0x" << std::hex << off << "~" << len
 	  << std::dec << " " << buffermode(buffered) << dendl;
   if (cct->_conf->bdev_inject_crash &&
       rand() % cct->_conf->bdev_inject_crash == 0) {
@@ -1000,6 +1001,103 @@ int KernelDevice::write(
   return _sync_write(off, bl, buffered, write_hint);
 }
 
+int KernelDevice::aio_legacy_write(
+  uint64_t off,
+  bufferlist &bl,
+  IOContext *ioc,
+  bool buffered,
+  int write_hint)
+{
+  if (use_append == false) {
+    return aio_write(off, bl, ioc, buffered, write_hint);
+  }
+  uint64_t len = bl.length();
+  dout(20) << __func__ << " 0x" << std::hex << off << "~" << len << std::dec
+    << " " << buffermode(buffered)
+    << dendl;
+  ceph_assert(is_valid_io(off, len));
+  if (cct->_conf->objectstore_blackhole) {
+    lderr(cct) << __func__ << " objectstore_blackhole=true, throwing out IO"
+      << dendl;
+    return 0;
+  }
+
+  if ((!buffered || bl.get_num_buffers() >= IOV_MAX) &&
+      bl.rebuild_aligned_size_and_memory(block_size, block_size, IOV_MAX)) {
+    dout(20) << __func__ << " rebuilding buffer to be aligned" << dendl;
+  }
+  dout(40) << "data:\n";
+  bl.hexdump(*_dout);
+  *_dout << dendl;
+
+  _aio_log_start(ioc, off, len);
+
+#ifdef HAVE_LIBAIO
+  if (aio && dio && !buffered) {
+    if (cct->_conf->bdev_inject_crash &&
+        rand() % cct->_conf->bdev_inject_crash == 0) {
+      derr << __func__ << " bdev_inject_crash: dropping io 0x" << std::hex
+        << off << "~" << len << std::dec
+        << dendl;
+      // generate a real io so that aio_wait behaves properly, but make it
+      // a read instead of write, and toss the result.
+      ioc->pending_aios.push_back(aio_t(ioc, choose_fd(false, write_hint, true)));
+      ++ioc->num_pending;
+      auto& aio = ioc->pending_aios.back();
+      aio.bl.push_back(
+          ceph::buffer::ptr_node::create(ceph::buffer::create_small_page_aligned(len)));
+      aio.bl.prepare_iov(&aio.iov);
+      aio.preadv(off, len);
+      ++injecting_crash;
+    } else {
+      if (bl.length() <= RW_IO_MAX) {
+        // fast path (non-huge write)
+        ioc->pending_aios.push_back(aio_t(ioc, choose_fd(false, write_hint, true)));
+        ++ioc->num_pending;
+        auto& aio = ioc->pending_aios.back();
+        bl.prepare_iov(&aio.iov);
+        aio.bl.claim_append(bl);
+        aio.pwritev(off, len);
+        aio.iocb.aio_lio_opcode = IO_CMD_LEGACY_WRITE;
+        dout(30) << aio << dendl;
+        dout(5) << __func__ << " 0x" << std::hex << off << "~" << len
+          << std::dec << " aio " << &aio << dendl;
+      } else {
+        // write in RW_IO_MAX-sized chunks
+        uint64_t prev_len = 0;
+        while (prev_len < bl.length()) {
+          bufferlist tmp;
+          if (prev_len + RW_IO_MAX < bl.length()) {
+            tmp.substr_of(bl, prev_len, RW_IO_MAX);
+          } else {
+            tmp.substr_of(bl, prev_len, bl.length() - prev_len);
+          }
+          auto len = tmp.length();
+          ioc->pending_aios.push_back(aio_t(ioc, choose_fd(false, write_hint, true)));
+          ++ioc->num_pending;
+          auto& aio = ioc->pending_aios.back();
+          tmp.prepare_iov(&aio.iov);
+          aio.bl.claim_append(tmp);
+          aio.pwritev(off + prev_len, len);
+          aio.iocb.aio_lio_opcode = IO_CMD_LEGACY_WRITE;
+          dout(30) << aio << dendl;
+          dout(5) << __func__ << " 0x" << std::hex << off + prev_len
+            << "~" << len
+            << std::dec << " aio " << &aio << " (piece)" << dendl;
+          prev_len += len;
+        }
+      }
+    }
+  } else
+#endif
+  {
+    int r = _sync_write(off, bl, buffered, write_hint);
+    _aio_log_finish(ioc, off, len);
+    if (r < 0)
+      return r;
+  }
+  return 0;
+}
 int KernelDevice::aio_write(
   uint64_t off,
   bufferlist &bl,

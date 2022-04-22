@@ -38,6 +38,7 @@ private:
   bool aio, dio;
   bool io_to_ng = false;
   bool alloc_submit_sync = true;
+  bool use_append = false;
 
   int vdo_fd = -1;      ///< fd for vdo sysfs directory
   std::string vdo_name;
@@ -97,7 +98,6 @@ private:
 
   void _aio_log_start(IOContext *ioc, uint64_t offset, uint64_t length);
   void _aio_log_finish(IOContext *ioc, uint64_t offset, uint64_t length);
-
   int _sync_write(uint64_t off, ceph::buffer::list& bl, bool buffered, int write_hint);
 
   int _lock();
@@ -143,6 +143,12 @@ public:
   int read_random(uint64_t off, uint64_t len, char *buf, bool buffered) override;
 
   int write(uint64_t off, ceph::buffer::list& bl, bool buffered, int write_hint = WRITE_LIFE_NOT_SET) override;
+  int aio_legacy_write(
+    uint64_t off,
+    ceph::buffer::list& bl,
+    IOContext *ioc,
+    bool buffered,
+    int write_hint = WRITE_LIFE_NOT_SET) override;
   int aio_write(uint64_t off, ceph::buffer::list& bl,
 		IOContext *ioc,
 		bool buffered,
