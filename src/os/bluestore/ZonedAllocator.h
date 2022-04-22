@@ -50,8 +50,8 @@ private:
   uint64_t max_open_zone = 256;
   static const uint64_t interleaving_unit = 128 * 1024;
   std::vector<uint64_t> active_zones;
-  uint64_t open_zone_for_fs = 128;
-  uint64_t open_zone_for_data = 128;
+  uint64_t open_zone_for_fs = 64;
+  uint64_t open_zone_for_data = 192;
   uint64_t last_visited_idx_fs;
   uint64_t last_visited_idx_data;
 
