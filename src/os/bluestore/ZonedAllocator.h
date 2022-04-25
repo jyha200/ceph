@@ -30,7 +30,7 @@ class ZonedAllocator : public Allocator {
   // atomic_alloc_and_submit_lock will be removed.
   ceph::mutex lock = ceph::make_mutex("ZonedAllocator::lock");
 public:
-  static const uint64_t RESERVE_FOR_ZNS_FS = 256;
+  static const uint64_t RESERVE_FOR_ZNS_FS = 16384;
 private:
   uint64_t zone_to_assign_for_zns_fs = 0;
 

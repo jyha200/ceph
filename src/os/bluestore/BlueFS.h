@@ -311,10 +311,11 @@ private:
   uint64_t cur_log_addr = 0;
   static const int NUM_ZNS_MODE_SUPER_BLOCK = 2;
   static const uint64_t FIRST_LOG_ZONE = NUM_ZNS_MODE_SUPER_BLOCK + 1;
-  static const uint64_t LOG_ZONE_COUNT = 256;
-  uint64_t get_meta_addr(uint64_t need);
-  uint64_t get_meta_zone_addr(uint64_t need);
-
+  static const uint64_t LOG_ZONE_COUNT = 16384;
+  uint64_t log_chunk_size = 0;
+  uint64_t log_stripe_size = 0;
+  void get_meta_addr_stripe(uint64_t need, PExtentVector& alloc_extents);
+  void get_meta_zone_addr_stripe(uint64_t need, PExtentVector& alloc_extents);
   std::atomic_int last_written;
   uint64_t zone_size = -1;
 
@@ -485,9 +486,12 @@ private:
     }
   }
 
-  uint64_t get_next_meta_zone();
   unsigned get_super_length() {
-    return 4096;
+    if (zns_fs) {
+      return 65536;
+    } else {
+      return 4096;
+    }
   }
   unsigned get_sb_zone(uint64_t sb_idx) {
     // first zone is reserved for MBR

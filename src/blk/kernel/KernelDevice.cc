@@ -917,9 +917,10 @@ int KernelDevice::_sync_write(uint64_t off, bufferlist &bl, bool buffered, int w
         buf = temp;
       }
 
-      dout(10) << __func__ << " " << __LINE__ << " buf 0x" << std::hex << buf
+      dout(10) << __func__ << " " << __LINE__ << " buf 0x" << std::hex << (uint64_t)buf
         << " len 0x" << " off 0x"<< o << dendl;
       r = ::pwrite(choose_fd(false, write_hint), buf, left, o);
+      ceph_assert(r == (ssize_t)left);
 
       if (temp_alloc) {
         free(buf);

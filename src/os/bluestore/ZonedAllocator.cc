@@ -121,7 +121,8 @@ int64_t ZonedAllocator::allocate(
 
     extents->emplace_back(bluestore_pextent_t(offset, target_size));
   ldout(cct, 10) << " allocated 0x"
-		 << std::hex << offset << " len 0x" << target_size << std::dec << dendl;
+		 << std::hex << offset << " len 0x" << target_size << std::dec << " type "
+     << (BLUEFS_ZNS_FS == hint) << dendl;
     remaining_size -= target_size;
     if (hint == BLUEFS_ZNS_FS) {
       last_visited_idx_fs++;

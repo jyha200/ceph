@@ -4680,6 +4680,18 @@ options:
   - hybrid
   - zoned
   with_legacy: true
+- name: bluestore_zns_fs_log_chunk_size
+  type: uint
+  level: advanced
+  desc: latency profile
+  default: 4096
+  with_legacy: true
+- name: bluestore_zns_fs_log_active_zone
+  type: uint
+  level: advanced
+  desc: latency profile
+  default: 1
+  with_legacy: true
 - name: bluestore_zns_fs_zone
   type: uint
   level: advanced
