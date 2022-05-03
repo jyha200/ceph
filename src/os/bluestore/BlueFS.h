@@ -316,6 +316,7 @@ private:
   uint64_t log_stripe_size = 0;
   void get_meta_addr_stripe(uint64_t need, PExtentVector& alloc_extents);
   void get_meta_zone_addr_stripe(uint64_t need, PExtentVector& alloc_extents);
+  void _do_get_meta_addr_stripe(uint64_t need, PExtentVector& alloc_extents);
   std::atomic_int last_written;
   uint64_t zone_size = -1;
 

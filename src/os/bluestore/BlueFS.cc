@@ -3147,56 +3147,49 @@ int BlueFS::_allocate_without_fallback(uint8_t id, uint64_t len,
   return 0;
 }
 
-void BlueFS::get_meta_addr_stripe(uint64_t need, PExtentVector& alloc_extents) {
-  std::unique_lock l(zone_lock);
+void BlueFS::_do_get_meta_addr_stripe(uint64_t need, PExtentVector& alloc_extents) {
   uint64_t allocated = cur_log_addr;
   cur_log_addr += need;
 
   ceph_assert(need % log_chunk_size == 0);
+  dout(10) << __func__ << " allocate total 0x" << std::hex << need << dendl;
   uint64_t chunk_count = need / log_chunk_size;
-  uint64_t base_zone = allocated / zone_size - ((allocated / zone_size) % log_stripe_size);
-  std::vector<uint64_t> zones(log_stripe_size);
-  for (uint32_t zone_idx = 0 ; zone_idx < log_stripe_size ; zone_idx++) {
-    zones[zone_idx] = (base_zone + zone_idx) % LOG_ZONE_COUNT + FIRST_LOG_ZONE;
-  }
+
   for (uint32_t chunk_idx = 0 ; chunk_idx < chunk_count; chunk_idx++) {
+    uint64_t base_zone = allocated / (zone_size * log_stripe_size) * log_stripe_size;
     uint64_t zone_idx = (allocated / log_chunk_size) % log_stripe_size;
-    uint64_t zone_off = (allocated / log_chunk_size) / log_stripe_size;
-    uint64_t addr = zones[zone_idx] * zone_size + (zone_off * log_chunk_size) % zone_size;
-    alloc_extents.push_back(bluestore_pextent_t(addr, log_chunk_size));
+    uint64_t zone = ((base_zone + zone_idx) % LOG_ZONE_COUNT) + FIRST_LOG_ZONE;
+    uint64_t chunk_off = (allocated  / log_chunk_size / log_stripe_size) % (zone_size / log_chunk_size);
+    dout(10) << __func__ << " zone size " << zone_size << " chunk_size " << log_chunk_size << " log_stripe_size " << log_stripe_size <<dendl;
+    uint64_t addr = zone * zone_size + chunk_off * log_chunk_size;
+    dout(10) << __func__ << " zone idx " << zone_idx << " chunk_off " << chunk_off << " addr " << addr << " allocated " << allocated <<dendl;
+    if (alloc_extents.size() >= 1 &&
+      alloc_extents.back().offset + alloc_extents.back().length == addr) {
+      alloc_extents.back().length += log_chunk_size;
+    } else {
+      alloc_extents.push_back(bluestore_pextent_t(addr, log_chunk_size));
+    }
     dout(10) << __func__ << " allocated 0x" << std::hex << addr<< std::dec<< dendl;
     allocated += log_chunk_size;
   }
 }
 
+void BlueFS::get_meta_addr_stripe(uint64_t need, PExtentVector& alloc_extents) {
+  std::unique_lock l(zone_lock);
+  dout(10) << __func__ << dendl;
+  _do_get_meta_addr_stripe(need, alloc_extents);
+}
+
 void BlueFS::get_meta_zone_addr_stripe(uint64_t need, PExtentVector& alloc_extents) {
   std::unique_lock l(zone_lock);
-  uint64_t cur_zone = cur_log_addr / zone_size;
+  dout(10) << __func__ << dendl;
+  uint64_t cur_base_zone = cur_log_addr / zone_size / log_stripe_size * log_stripe_size;
   bool need_change_zone = (cur_log_addr % (zone_size * log_stripe_size) > 0);
   if (need_change_zone) {
-    cur_zone += log_stripe_size;
+    cur_base_zone += log_stripe_size;
   }
-  cur_log_addr = cur_zone* zone_size;
-
-  uint64_t allocated = cur_log_addr;
-  cur_log_addr += need;
-
-  ceph_assert(need % log_chunk_size == 0);
-  uint64_t chunk_count = need / log_chunk_size;
-  uint64_t base_zone = allocated / zone_size - ((allocated / zone_size) % log_stripe_size);
-  std::vector<uint64_t> zones(log_stripe_size);
-  for (uint32_t zone_idx = 0 ; zone_idx < log_stripe_size ; zone_idx++) {
-    zones[zone_idx] = (base_zone + zone_idx) % LOG_ZONE_COUNT + FIRST_LOG_ZONE;
-    dout(10) << __func__ << " zone " << zones[zone_idx]<< dendl;
-  }
-  for (uint32_t chunk_idx = 0 ; chunk_idx < chunk_count; chunk_idx++) {
-    uint64_t zone_idx = (allocated / log_chunk_size) % log_stripe_size;
-    uint64_t zone_off = (allocated / log_chunk_size) / log_stripe_size;
-    uint64_t addr = zones[zone_idx] * zone_size + (zone_off * log_chunk_size) % zone_size;
-    alloc_extents.push_back(bluestore_pextent_t(addr, log_chunk_size));
-    dout(10) << __func__ << " allocated 0x" << std::hex << addr<< " zone_off " << zone_off << std::dec<< dendl;
-    allocated += log_chunk_size;
-  }
+  cur_log_addr = cur_base_zone * zone_size;
+  _do_get_meta_addr_stripe(need, alloc_extents);
 }
 
 int BlueFS::_allocate(uint8_t id, uint64_t len,
