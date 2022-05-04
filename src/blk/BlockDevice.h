@@ -71,6 +71,8 @@ enum struct blk_access_mode_t {
 blk_access_mode_t buffermode(bool buffered);
 std::ostream& operator<<(std::ostream& os, const blk_access_mode_t buffered);
 
+class bluefs_fnode_t;
+
 /// track in-flight io
 struct IOContext {
 private:
@@ -99,6 +101,11 @@ public:
   };
   std::list<post_addr_t> post_addrs;
   bool allow_eio;
+  bluefs_fnode_t* fnode;
+
+  // for zns fs
+  unsigned id;
+  uint64_t file_offset;
 
   explicit IOContext(CephContext* cct, void *p, bool allow_eio = false)
     : cct(cct), priv(p), allow_eio(allow_eio)

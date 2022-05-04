@@ -301,6 +301,7 @@ public:
     FileRef file;
     explicit FileLock(FileRef f) : file(std::move(f)) {}
   };
+  void aio_finish(IOContext* ioc);
 
 private:
   ceph::mutex lock = ceph::make_mutex("BlueFS::lock");

@@ -247,9 +247,6 @@ static void create_append_command(
   aio_t *io,
   uring_priv_t *uring_priv)
 {
-  // No vector support for append
-  ceph_assert(io->iov.size() == 1);
-
   create_io_command2(
     &uring_priv->io_cmd,
     nvme_io_command_t::opcode::APPEND,

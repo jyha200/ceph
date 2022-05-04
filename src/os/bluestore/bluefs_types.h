@@ -196,6 +196,8 @@ struct bluefs_fnode_t {
 
   mempool::bluefs::vector<bluefs_extent_t>::iterator seek(
     uint64_t off, uint64_t *x_off);
+  mempool::bluefs::vector<bluefs_extent_t>::iterator seek_stripe(
+    uint64_t off, uint64_t *x_off);
 
   void dump(ceph::Formatter *f) const;
   static void generate_test_instances(std::list<bluefs_fnode_t*>& ls);
