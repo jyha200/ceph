@@ -335,6 +335,25 @@ void BlueFS::_update_logger_stats()
   }
 }
 
+static void aio_cb(void * priv, void* priv2) {
+  BlueFS* bluefs = static_cast<BlueFS*>(priv);
+  IOContext* ioc = static_cast<IOContext*>(priv2);
+  bluefs->aio_finish(ioc);
+}
+
+void BlueFS::aio_finish(IOContext* ioc) {
+  auto& fnode = ioc->fnode;
+  PExtentVector extents;
+  for (auto& addr : ioc->post_addrs) {
+    extents.push_back(bluestore_pextent_t(addr.offset, addr.length));
+  }
+  fnode->replace_or_insert_extents(
+    ioc->id,
+    ioc->file_offset,
+    extents,
+    pending_release);
+}
+
 int BlueFS::add_block_device(unsigned id, const string& path, bool trim,
                              uint64_t reserved,
                              bluefs_shared_alloc_context_t* _shared_alloc)
@@ -343,8 +362,24 @@ int BlueFS::add_block_device(unsigned id, const string& path, bool trim,
            << reserved << dendl;
   ceph_assert(id < bdev.size());
   ceph_assert(bdev[id] == NULL);
-  BlockDevice *b = BlockDevice::create(cct, path, NULL, NULL,
-				       discard_cb[id], static_cast<void*>(this));
+  BlockDevice *b;
+  if (zns_fs) {
+    b = BlockDevice::create(
+        cct,
+        path,
+        aio_cb,
+        static_cast<void*>(this),
+        discard_cb[id],
+        static_cast<void*>(this));
+  } else {
+    b = BlockDevice::create(
+        cct,
+        path,
+        NULL,
+        NULL,
+        discard_cb[id],
+        static_cast<void*>(this));
+  }
   block_reserved[id] = reserved;
   if (_shared_alloc) {
     b->set_no_exclusive_lock();
@@ -362,6 +397,9 @@ int BlueFS::add_block_device(unsigned id, const string& path, bool trim,
 	  << " size " << byte_u_t(b->get_size()) << dendl;
   bdev[id] = b;
   ioc[id] = new IOContext(cct, NULL);
+  if (zns_fs) {
+    ioc[id]->priv = static_cast<void*>(ioc[id]);
+  }
   if (_shared_alloc) {
     ceph_assert(!shared_alloc);
     shared_alloc = _shared_alloc;
@@ -2895,7 +2933,13 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
       bdev[p->bdev]->write(p->offset + x_off, t, buffered, h->write_hint);
     } else {
       if (zns_fs) {
-        bdev[p->bdev]->aio_legacy_write(p->offset + x_off, t, h->iocv[p->bdev], buffered, h->write_hint);
+        auto ioc = h->iocv[p->bdev];
+        ioc->file_offset = offset;
+        if (h->file->fnode.ino <= 1) {
+          bdev[p->bdev]->aio_legacy_write(p->offset + x_off, t, ioc, buffered, h->write_hint);
+        } else {
+          bdev[p->bdev]->aio_write(p->offset + x_off, t, ioc, buffered, h->write_hint);
+        }
       } else {
         bdev[p->bdev]->aio_write(p->offset + x_off, t, h->iocv[p->bdev], buffered, h->write_hint);
       }

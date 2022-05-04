@@ -123,6 +123,9 @@ ostream& operator<<(ostream& out, const bluefs_super_t& s)
 mempool::bluefs::vector<bluefs_extent_t>::iterator bluefs_fnode_t::seek(
   uint64_t offset, uint64_t *x_off)
 {
+  if (ino <= 1) {
+    return seek_stripe(offset, x_off);
+  }
   auto p = extents.begin();
 
   if (extents_index.size() > 4) {
@@ -147,6 +150,32 @@ mempool::bluefs::vector<bluefs_extent_t>::iterator bluefs_fnode_t::seek(
   return p;
 }
 
+mempool::bluefs::vector<bluefs_extent_t>::iterator bluefs_fnode_t::seek_stripe(
+  uint64_t offset, uint64_t *x_off)
+{
+  auto p = extents.begin();
+
+  if (extents_index.size() > 4) {
+    auto it = std::upper_bound(extents_index.begin(), extents_index.end(),
+      offset);
+    assert(it != extents_index.begin());
+    --it;
+    assert(offset >= *it);
+    p += it - extents_index.begin();
+    offset -= *it;
+  }
+
+  while (p != extents.end()) {
+    if ((int64_t) offset >= p->length) {
+      offset -= p->length;
+      ++p;
+    } else {
+      break;
+    }
+  }
+  *x_off = offset;
+  return p;
+}
 void bluefs_fnode_t::dump(Formatter *f) const
 {
   f->dump_unsigned("ino", ino);
