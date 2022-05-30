@@ -312,7 +312,7 @@ private:
   uint64_t cur_log_addr = 0;
   static const int NUM_ZNS_MODE_SUPER_BLOCK = 2;
   static const uint64_t FIRST_LOG_ZONE = NUM_ZNS_MODE_SUPER_BLOCK + 1;
-  static const uint64_t LOG_ZONE_COUNT = 256;
+  static const uint64_t LOG_ZONE_COUNT = 8192;
   uint64_t get_meta_addr(uint64_t need);
   uint64_t get_meta_zone_addr(uint64_t need);
 
