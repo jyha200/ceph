@@ -58,8 +58,8 @@ ZonedAllocator::ZonedAllocator(CephContext* cct,
     num_available_zones = num_zones - RESERVE_FOR_ZNS_FS;
     open_zone_for_fs = cct->_conf->bluestore_zns_fs_zone;
     ceph_assert(max_open_zone > open_zone_for_fs);
-    open_zone_for_data = max_open_zone - open_zone_for_fs;
   }
+  open_zone_for_data = max_open_zone - open_zone_for_fs;
   for (uint64_t i = 0 ; i < max_open_zone ; i++) {
     active_zones[i] = i + first_seq_zone_num;
   }
