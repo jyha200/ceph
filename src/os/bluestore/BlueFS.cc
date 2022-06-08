@@ -2541,7 +2541,7 @@ void BlueFS::_compact_log_async(std::unique_lock<ceph::mutex>& l)
   dout(10) << __func__ << " release old log extents " << old_extents << dendl;
   for (auto& r : old_extents) {
     if (zns_fs) {
-      if ((r.offset + r.length) % zone_size == 0) {
+      if ((r.offset) % zone_size == 0) {
         uint64_t zone = r.offset / zone_size;
         dout(20) << __func__ << " reset zone 0x" << std::hex << zone << std::dec << dendl;
         bdev[BDEV_DB]->reset_zone(zone);
