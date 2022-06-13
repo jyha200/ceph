@@ -225,6 +225,7 @@ void HMSMRDevice::aio_submit(IOContext* ioc) {
           .length = pending_aio->length };
         ioc->post_addrs.push_back(post_addr);
         pending_aio->post_offset_ptr = &(ioc->post_addrs.back().offset);
+//        dout(1) << __func__ << " addr_ptr "<< pending_aio->post_offset_ptr << " length "<< std::hex <<pending_aio->length <<std::dec<< dendl;
       }
 
       if (support_multi_qd_submission()) {

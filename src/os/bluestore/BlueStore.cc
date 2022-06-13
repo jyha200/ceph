@@ -12077,7 +12077,6 @@ void BlueStore::_txc_update_store_statfs(TransContext *txc)
 void BlueStore::txc_aio_finish(void *p) {
   TransContext* txc = static_cast<TransContext*>(p);
   if (txc->post_write) {
-    auto c = txc->coll;
     IOContext* ioc = &txc->ioc;
     auto addr_iter = ioc->post_addrs.begin();
     for (auto& post_wctx : txc->post_wctxs) {
@@ -12085,34 +12084,39 @@ void BlueStore::txc_aio_finish(void *p) {
       auto dirty_start = post_wctx.offset;
       uint64_t end = post_wctx.offset + post_wctx.length;
       auto dirty_end = end;
-      auto o = post_wctx.onode;
-      for (auto& wi : wctx.writes) {
-        auto& dblob = wi.b->dirty_blob();
-        auto b_off = dblob.post_write_b_off;
-        auto final_length = dblob.post_write_length;
-        PExtentVector extents;
-        auto remain = final_length;
-        while (remain > 0) {
-          auto& cur_addr = *addr_iter;
-          extents.push_back(
-              bluestore_pextent_t(cur_addr.offset, cur_addr.length));
-          ceph_assert(remain >= cur_addr.length);
-          remain -= cur_addr.length;
-          addr_iter++;
+      {
+        auto c = post_wctx.coll;
+        std::unique_lock l(c->lock);
+
+        for (auto& wi : wctx.writes) {
+          auto& dblob = wi.b->dirty_blob();
+          auto b_off = wi.post_write_offset;
+          auto final_length = wi.post_write_length;
+          PExtentVector extents;
+          auto remain = final_length;
+          while (remain > 0) {
+            auto& cur_addr = *addr_iter;
+            extents.push_back(
+                bluestore_pextent_t(cur_addr.offset, cur_addr.length));
+//            dout(1) << __func__ << " addr_ptr "<< &cur_addr<<" remain " <<std::hex << remain << " addr off " << cur_addr.offset << " addr len " << cur_addr.length <<std::dec<< dendl;
+            ceph_assert(remain >= cur_addr.length);
+            remain -= cur_addr.length;
+            addr_iter++;
+          }
+          dblob.allocated(b_off, final_length, extents);
+          ceph_assert(dblob.has_csum() == false);
         }
-        dblob.allocated(b_off, final_length, extents);
-        ceph_assert(dblob.has_csum() == false);
-      }
+        auto o = c->get_onode(post_wctx.oid, false, false);
+        _wctx_finish(txc, c, o, &wctx);
+        if (end > o->onode.size) {
+          dout(20) << __func__ << " extending size to 0x" << std::hex << end
+            << std::dec << dendl;
+          o->onode.size = end;
+        }
 
-      _wctx_finish(txc, c, o, &wctx);
-      if (end > o->onode.size) {
-        dout(20) << __func__ << " extending size to 0x" << std::hex << end
-          << std::dec << dendl;
-        o->onode.size = end;
+        o->extent_map.compress_extent_map(dirty_start, dirty_end - dirty_start);
+        o->extent_map.dirty_range(dirty_start, dirty_end - dirty_start);
       }
-
-      o->extent_map.compress_extent_map(dirty_start, dirty_end - dirty_start);
-      o->extent_map.dirty_range(dirty_start, dirty_end - dirty_start);
     }
     txc->post_wctxs.clear();
 
@@ -15143,13 +15147,17 @@ int BlueStore::_do_alloc_write(
 	break;
       }
     }
+
     for (auto& p : extents) {
       txc->allocated.insert(p.offset, p.length);
     }
     if (bdev->is_smr()) {
-      dblob.post_write_b_off = p2align(b_off, min_alloc_size);
-      dblob.post_write_length = final_length;
+      ceph_assert(wi.post_write_offset == 0);
+      ceph_assert(wi.post_write_length == 0);
+      wi.post_write_offset = p2align(b_off, min_alloc_size);
+      wi.post_write_length = final_length;
     }
+    //dout(1) << __func__ << " total_len " << std::hex << total_len << " final_length " << final_length << std::dec <<dendl;
     dblob.allocated(p2align(b_off, min_alloc_size), final_length, extents);
 
     dout(20) << __func__ << " blob " << *wi.b << dendl;
@@ -15597,8 +15605,7 @@ int BlueStore::_do_write(
   if (bdev->is_smr() && bdev->need_postpone_db_transaction()) {
     txc->post_write = true;
     o->post_write = true;
-    txc->post_wctxs.push_back({std::move(wctx), offset, length, o});
-    txc->coll = c;
+    txc->post_wctxs.push_back({std::move(wctx), offset, length, o->oid, c});
   } else {
     _wctx_finish(txc, c, o, &wctx);
     if (end > o->onode.size) {

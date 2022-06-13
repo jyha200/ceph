@@ -1554,6 +1554,8 @@ public:
       bool compressed = false;
       ceph::buffer::list compressed_bl;
       size_t compressed_len = 0;
+      uint64_t post_write_offset = 0;
+      uint64_t post_write_length = 0;
 
       write_item(
 	uint64_t logical_offs,
@@ -1733,7 +1735,8 @@ public:
       WriteContext wctx;
       uint64_t offset = 0;
       uint64_t length = 0;
-      OnodeRef onode;
+      ghobject_t oid;
+      CollectionRef coll;
     };
 
     std::list<PostWriteContext> post_wctxs;
