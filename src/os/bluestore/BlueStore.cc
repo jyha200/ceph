@@ -2424,6 +2424,9 @@ BlueStore::OldExtent* BlueStore::OldExtent::create(CollectionRef c,
 #undef dout_context
 #define dout_context onode->c->store->cct
 
+bool BlueStore::ExtentMap::zns_mode = false;
+uint64_t BlueStore::ExtentMap::zone_size = 0;
+
 BlueStore::ExtentMap::ExtentMap(Onode *o)
   : onode(o),
     inline_bl(
@@ -2518,6 +2521,11 @@ void BlueStore::ExtentMap::dup(BlueStore* b, TransContext* txc,
     Extent* ne = new Extent(e.logical_offset + skip_front + dstoff - srcoff,
       e.blob_offset + skip_front, e.length - skip_front - skip_back, cb);
     newo->extent_map.extent_map.insert(*ne);
+    if (zns_mode) {
+      for (auto& e : cb->get_blob().get_extents()) {
+        newo->extent_map.ref_zone(e.offset / zone_size);
+      }
+    }
     ne->blob->get_ref(c.get(), ne->blob_offset, ne->length);
     // fixme: we may leave parts of new blob unreferenced that could
     // be freed (relative to the shared_blob).
@@ -3168,6 +3176,11 @@ unsigned BlueStore::ExtentMap::decode_some(bufferlist& bl)
     pos += prev_len;
     ++n;
     extent_map.insert(*le);
+    if (zns_mode) {
+      for (auto& e : le->blob->get_blob().get_extents()) {
+        ref_zone(e.offset / zone_size);
+      }
+    }
   }
 
   ceph_assert(n == num);
@@ -3513,6 +3526,11 @@ BlueStore::Extent *BlueStore::ExtentMap::set_lextent(
 
   Extent *le = new Extent(logical_offset, blob_offset, length, b);
   extent_map.insert(*le);
+  if (zns_mode) {
+    for (auto& e : b->get_blob().get_extents()) {
+      ref_zone(e.offset / zone_size);
+    }
+  }
   if (spans_shard(logical_offset, length)) {
     request_reshard(logical_offset, logical_offset + length);
   }
@@ -6858,6 +6876,8 @@ int BlueStore::mkfs()
   if (bdev->is_smr()) {
     freelist_type = "zoned";
     zone_size = bdev->get_zone_size();
+    ExtentMap::zone_size = zone_size;
+    ExtentMap::zns_mode = true;
 		if (cct->_conf->contains("bluestore_cns_path")) {
       // reserve 2 zones for blueof superblock, 1 zones for MBR
 			first_sequential_zone = 3;
@@ -11887,6 +11907,8 @@ int BlueStore::_open_super_meta()
     if (r >= 0) {
       auto p = bl.cbegin();
       decode(zone_size, p);
+      ExtentMap::zone_size = zone_size;
+      ExtentMap::zns_mode = true;
       dout(1) << __func__ << " zone_size 0x" << std::hex << zone_size << std::dec << dendl;
       ceph_assert(bdev->is_smr());
     } else {
@@ -12098,7 +12120,6 @@ void BlueStore::txc_aio_finish(void *p) {
             auto& cur_addr = *addr_iter;
             extents.push_back(
                 bluestore_pextent_t(cur_addr.offset, cur_addr.length));
-//            dout(1) << __func__ << " addr_ptr "<< &cur_addr<<" remain " <<std::hex << remain << " addr off " << cur_addr.offset << " addr len " << cur_addr.length <<std::dec<< dendl;
             ceph_assert(remain >= cur_addr.length);
             remain -= cur_addr.length;
             addr_iter++;
@@ -15229,16 +15250,16 @@ void BlueStore::_wctx_finish(
   if (bdev->is_smr()) {
     for (auto& w : wctx->writes) {
       for (auto& e : w.b->get_blob().get_extents()) {
-	if (!e.is_valid()) {
-	  continue;
-	}
-	uint32_t zone = e.offset / zone_size;
-	if (!o->onode.zone_offset_refs.count(zone)) {
-	  uint64_t zoff = e.offset % zone_size;
-	  dout(20) << __func__ << " add ref zone 0x" << std::hex << zone
-		   << " offset 0x" << zoff << std::dec << dendl;
-	  txc->note_write_zone_offset(o, zone, zoff);
-	}
+        if (!e.is_valid()) {
+          continue;
+        }
+        uint32_t zone = e.offset / zone_size;
+        if (!o->onode.zone_offset_refs.count(zone)) {
+          uint64_t zoff = e.offset % zone_size;
+          dout(20) << __func__ << " add ref zone 0x" << std::hex << zone
+            << " offset 0x" << zoff << std::dec << dendl;
+          txc->note_write_zone_offset(o, zone, zoff);
+        }
       }
     }
   }
@@ -15254,7 +15275,7 @@ void BlueStore::_wctx_finish(
     const bluestore_blob_t& blob = b->get_blob();
     if (blob.is_compressed()) {
       if (lo.blob_empty) {
-	txc->statfs_delta.compressed() -= blob.get_compressed_payload_length();
+        txc->statfs_delta.compressed() -= blob.get_compressed_payload_length();
       }
       txc->statfs_delta.compressed_original() -= lo.e.length;
     }
@@ -15263,31 +15284,31 @@ void BlueStore::_wctx_finish(
     if (!r.empty()) {
       dout(20) << __func__ << "  blob " << *b << " release " << r << dendl;
       if (blob.is_shared()) {
-	PExtentVector final;
+        PExtentVector final;
         c->load_shared_blob(b->shared_blob);
-	bool unshare = false;
-	bool* unshare_ptr =
-	  !maybe_unshared_blobs || b->is_referenced() ? nullptr : &unshare;
-	for (auto e : r) {
-	  b->shared_blob->put_ref(
-	    e.offset, e.length, &final,
-	    unshare_ptr);
+        bool unshare = false;
+        bool* unshare_ptr =
+          !maybe_unshared_blobs || b->is_referenced() ? nullptr : &unshare;
+        for (auto e : r) {
+          b->shared_blob->put_ref(
+              e.offset, e.length, &final,
+              unshare_ptr);
 #ifdef HAVE_LIBZBD
-	  // we also drop zone ref for shared blob extents
-	  if (bdev->is_smr() && e.is_valid()) {
-	    zones_with_releases.insert(e.offset / zone_size);
-	  }
+          // we also drop zone ref for shared blob extents
+          if (bdev->is_smr() && e.is_valid()) {
+            zones_with_releases.insert(e.offset / zone_size);
+          }
 #endif
-	}
-	if (unshare) {
-	  ceph_assert(maybe_unshared_blobs);
-	  maybe_unshared_blobs->insert(b->shared_blob.get());
-	}
-	dout(20) << __func__ << "  shared_blob release " << final
-		 << " from " << *b->shared_blob << dendl;
-	txc->write_shared_blob(b->shared_blob);
-	r.clear();
-	r.swap(final);
+        }
+        if (unshare) {
+          ceph_assert(maybe_unshared_blobs);
+          maybe_unshared_blobs->insert(b->shared_blob.get());
+        }
+        dout(20) << __func__ << "  shared_blob release " << final
+          << " from " << *b->shared_blob << dendl;
+        txc->write_shared_blob(b->shared_blob);
+        r.clear();
+        r.swap(final);
       }
     }
     // we can't invalidate our logical extents as we drop them because
@@ -15306,14 +15327,14 @@ void BlueStore::_wctx_finish(
       }
 #ifdef HAVE_LIBZBD
       if (bdev->is_smr() && e.is_valid()) {
-	zones_with_releases.insert(e.offset / zone_size);
+        zones_with_releases.insert(e.offset / zone_size);
       }
 #endif
     }
 
     if (b->is_spanning() && !b->is_referenced() && lo.blob_empty) {
       dout(20) << __func__ << "  spanning_blob_map removing empty " << *b
-	       << dendl;
+        << dendl;
       o->extent_map.spanning_blob_map.erase(b->id);
     }
     delete &lo;
@@ -15324,19 +15345,15 @@ void BlueStore::_wctx_finish(
     // we need to fault the entire extent range in here to determinte if we've dropped
     // all refs to a zone.
     o->extent_map.fault_range(db, 0, OBJECT_MAX_SIZE);
-    for (auto& b : o->extent_map.extent_map) {
-      for (auto& e : b.blob->get_blob().get_extents()) {
-	if (e.is_valid()) {
-	  zones_with_releases.erase(e.offset / zone_size);
-	}
-      }
-    }
+
     for (auto zone : zones_with_releases) {
-      auto p = o->onode.zone_offset_refs.find(zone);
-      if (p != o->onode.zone_offset_refs.end()) {
-	dout(20) << __func__ << " rm ref zone 0x" << std::hex << zone
-		 << " offset 0x" << p->second << std::dec << dendl;
-	txc->note_release_zone_offset(o, zone, p->second);
+      if (o->extent_map.zone_map.find(zone) == o->extent_map.zone_map.end()) {
+        auto p = o->onode.zone_offset_refs.find(zone);
+        if (p != o->onode.zone_offset_refs.end()) {
+          dout(20) << __func__ << " rm ref zone 0x" << std::hex << zone
+            << " offset 0x" << p->second << std::dec << dendl;
+          txc->note_release_zone_offset(o, zone, p->second);
+        }
       }
     }
   }

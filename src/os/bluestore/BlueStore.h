@@ -795,6 +795,9 @@ public:
     extent_map_t extent_map;        ///< map of Extents to Blobs
     blob_map_t spanning_blob_map;   ///< blobs that span shards
     typedef boost::intrusive_ptr<Onode> OnodeRef;
+    std::map<uint64_t, uint64_t> zone_map;
+    static bool zns_mode;
+    static uint64_t zone_size;
 
     struct Shard {
       bluestore_onode_t::shard_info *shard_info = nullptr;
@@ -927,8 +930,34 @@ public:
       extent_map.insert(*new Extent(lo, o, l, b));
     }
 
+    void ref_zone(size_t zone) {
+      auto iter = zone_map.find(zone);
+      if (iter != zone_map.end()) {
+        iter->second++;
+      } else {
+        zone_map[zone] = 1;
+      }
+    }
+
+    void unref_zone(size_t zone) {
+      auto iter = zone_map.find(zone);
+      if (iter != zone_map.end()) {
+        ceph_assert(iter->second > 0);
+        iter->second--;
+        if (iter->second == 0) {
+          zone_map.erase(iter);
+        }
+      }
+    }
+
     /// remove (and delete) an Extent
     void rm(extent_map_t::iterator p) {
+      if (zns_mode) {
+        for (auto& e : p->blob->get_blob().get_extents()) {
+          unref_zone(e.offset / zone_size);
+        }
+      }
+
       extent_map.erase_and_dispose(p, DeleteDisposer());
     }
 
