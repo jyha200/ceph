@@ -63,8 +63,12 @@ ZonedAllocator::ZonedAllocator(CephContext* cct,
   for (uint64_t i = 0 ; i < max_open_zone ; i++) {
     active_zones[i] = i + first_seq_zone_num;
   }
+  ceph_assert(open_zone_for_data >= GROUP_COUNT);
+  group_size = open_zone_for_data / GROUP_COUNT;
   last_visited_idx_fs = max_open_zone - 1;
-  last_visited_idx_data = max_open_zone - 1;
+  for (unsigned i = 0 ; i < GROUP_COUNT ; i++) {
+    last_visited_idx_data[i] = group_size - 1;
+  }
 }
 
 ZonedAllocator::~ZonedAllocator()
@@ -75,6 +79,20 @@ void ZonedAllocator::select_other_zone(uint64_t index) {
   uint64_t current_zone = active_zones[index] - first_seq_zone_num;
   uint64_t new_zone = ((current_zone + max_open_zone) % num_available_zones) + first_seq_zone_num;
   active_zones[index] = new_zone;
+}
+
+uint64_t ZonedAllocator::get_group(int64_t hint) {
+  return hint % GROUP_COUNT;
+}
+
+uint64_t ZonedAllocator::get_target_idx_from_hint(int64_t hint) {
+  auto group = get_group(hint);
+  return ((last_visited_idx_data[group] + 1) % group_size) + group * group_size + open_zone_for_fs;
+}
+
+void ZonedAllocator::increase_target_idx(int64_t hint) {
+  auto group = get_group(hint);
+  last_visited_idx_data[group]++;
 }
 
 int64_t ZonedAllocator::allocate(
@@ -96,7 +114,8 @@ int64_t ZonedAllocator::allocate(
     if (hint == BLUEFS_ZNS_FS) {
       target_idx = (last_visited_idx_fs + 1) % open_zone_for_fs;
     } else {
-      target_idx = (last_visited_idx_data + 1) % open_zone_for_data + open_zone_for_fs;
+      //target_idx = (last_visited_idx_data + 1) % open_zone_for_data + open_zone_for_fs;
+      target_idx = get_target_idx_from_hint(hint);
     }
     uint64_t zone_num = active_zones[target_idx];
     if (zone_num == cleaning_zone) {
@@ -104,7 +123,7 @@ int64_t ZonedAllocator::allocate(
       if (hint == BLUEFS_ZNS_FS) {
         last_visited_idx_fs++;
       } else {
-        last_visited_idx_data++;
+        increase_target_idx(hint);
       }
       continue;
     }
@@ -126,7 +145,7 @@ int64_t ZonedAllocator::allocate(
     if (hint == BLUEFS_ZNS_FS) {
       last_visited_idx_fs++;
     } else {
-      last_visited_idx_data++;
+      increase_target_idx(hint);
     }
   }
   return want_size;

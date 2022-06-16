@@ -1168,6 +1168,11 @@ public:
     void get();
     void put();
 
+    int64_t get_hint() {
+      std::hash<std::string> hasher;
+      std::string str(key.c_str(), key.size());
+      return hasher(str);
+    }
     inline bool put_cache() {
       ceph_assert(!cached);
       cached = true;
