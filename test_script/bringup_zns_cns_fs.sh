@@ -46,7 +46,7 @@ bringup_osd() {
   sudo chown -R ceph:ceph /var/lib/ceph/osd/ceph-$ID
   ln -s $DEV /var/lib/ceph/osd/ceph-$ID/block
   sudo $BIN_DIR/ceph-authtool --create-keyring /var/lib/ceph/osd/ceph-$ID/keyring --name osd.$ID --add-key $OSD_SECRET
-  sudo $BIN_DIR/ceph-osd -i $ID --mkfs --osd-uuid $UUID --debug-osd 10
+  sudo $BIN_DIR/ceph-osd -i $ID --mkfs --osd-uuid $UUID --debug-osd 1
   echo "mkfs osd done"
   sudo $BIN_DIR/ceph-osd -i $ID --debug-osd 1
   echo "brinup_osd done"
