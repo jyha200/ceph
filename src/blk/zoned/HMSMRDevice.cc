@@ -66,6 +66,7 @@ static void hmsmr_cb(void* priv, void* priv2)
     if (ioc->priv != nullptr) {
       if (ioc->num_running == 0) {
         casted_priv->cb(casted_priv->cbpriv, ioc->priv);
+        ioc->aio_wake();
       }
     } else {
       ioc->try_aio_wake();
@@ -211,7 +212,8 @@ std::vector<uint64_t> HMSMRDevice::get_zones()
 }
 
 void HMSMRDevice::aio_submit(IOContext* ioc) {
-  if (ioc->pending_aios.front().iocb.aio_lio_opcode == IO_CMD_PWRITEV) {
+  if (ioc->pending_aios.front().iocb.aio_lio_opcode == IO_CMD_PWRITEV ||
+    ioc->pending_aios.front().iocb.aio_lio_opcode == IO_CMD_LEGACY_WRITE) {
     std::list<uint64_t> requested_zones;
     for (auto pending_aio = ioc->pending_aios.begin();
         pending_aio != ioc->pending_aios.end();
@@ -229,11 +231,12 @@ void HMSMRDevice::aio_submit(IOContext* ioc) {
 
       if (support_multi_qd_submission()) {
         if (support_append()) {
-          pending_aio->offset = zone * zone_size;
+          if (ioc->pending_aios.front().iocb.aio_lio_opcode == IO_CMD_PWRITEV) {
+            pending_aio->offset = zone * zone_size;
+          }
         }
       } else {
         std::lock_guard lock(pending_ios[zone].lock);
-
         aio_t aio_to_push = *pending_aio;
         pending_ios[zone].aios.push_back(aio_to_push);
         requested_zones.push_back(zone);
@@ -249,8 +252,7 @@ void HMSMRDevice::aio_submit(IOContext* ioc) {
         do_aio_submit(*zone, false);
       }
     }
-  }
-  else {
+  } else {
     KernelDevice::aio_submit(ioc);
   }
   return;

@@ -341,6 +341,11 @@ static void aio_cb(void * priv, void* priv2) {
 
 void BlueFS::aio_finish(IOContext* ioc) {
   auto& fnode = ioc->fnode;
+  ceph_assert(fnode != nullptr);
+
+  if (fnode->ino <= 1) {
+    return;
+  }
   PExtentVector extents;
   for (auto& addr : ioc->post_addrs) {
     extents.push_back(bluestore_pextent_t(addr.offset, addr.length));
@@ -397,6 +402,7 @@ int BlueFS::add_block_device(unsigned id, const string& path, bool trim,
   ioc[id] = new IOContext(cct, NULL);
   if (zns_fs) {
     ioc[id]->priv = static_cast<void*>(ioc[id]);
+    ioc[id]->id = id;
   }
   if (_shared_alloc) {
     ceph_assert(!shared_alloc);
@@ -3439,6 +3445,7 @@ int BlueFS::open_for_write(
 
   if (boost::algorithm::ends_with(filename, ".log")) {
     (*h)->writer_type = BlueFS::WRITER_WAL;
+    (*h)->bluefs = this;
     if (logger && !overwrite) {
       logger->inc(l_bluefs_files_written_wal);
     }
@@ -3459,6 +3466,11 @@ BlueFS::FileWriter *BlueFS::_create_writer(FileRef f)
   for (unsigned i = 0; i < MAX_BDEV; ++i) {
     if (bdev[i]) {
       w->iocv[i] = new IOContext(cct, NULL);
+      if (zns_fs) {
+        w->iocv[i]->priv = w->iocv[i];
+        w->iocv[i]->fnode = &w->file->fnode;
+        w->iocv[i]->id = i;
+      }
     }
   }
   return w;

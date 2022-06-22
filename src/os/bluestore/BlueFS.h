@@ -171,6 +171,7 @@ public:
     ceph::buffer::list buffer;      ///< new data to write (at end of file)
     ceph::buffer::list tail_block;  ///< existing partial block at end of file, if any
   public:
+    BlueFS* bluefs = nullptr;
     unsigned get_buffer_length() const {
       return buffer.length();
     }

@@ -101,11 +101,11 @@ public:
   };
   std::list<post_addr_t> post_addrs;
   bool allow_eio;
-  bluefs_fnode_t* fnode;
+  bluefs_fnode_t* fnode = nullptr;
 
   // for zns fs
-  unsigned id;
-  uint64_t file_offset;
+  unsigned id = 0;
+  uint64_t file_offset = 0;
 
   explicit IOContext(CephContext* cct, void *p, bool allow_eio = false)
     : cct(cct), priv(p), allow_eio(allow_eio)
@@ -122,8 +122,15 @@ public:
   void aio_wait();
   uint64_t get_num_ios() const;
 
+  void aio_wake() {
+    ceph_assert(num_running == 0);
+
+    std::lock_guard l(lock);
+    cond.notify_all();
+  }
+
   void try_aio_wake() {
-    assert(num_running >= 1);
+    ceph_assert(num_running >= 1);
 
     std::lock_guard l(lock);
     if (num_running.fetch_sub(1) == 1) {
