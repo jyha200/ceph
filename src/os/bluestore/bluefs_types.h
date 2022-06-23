@@ -96,12 +96,18 @@ struct bluefs_fnode_t {
     mempool::bluefs::vector<bluefs_extent_t> to_replace;
     mempool::bluefs::vector<uint64_t> new_extents_index;
     auto iter = extents.begin();
+
+    // find first point to replace or insert
     for (; iter != extents.end() ; ++iter) {
-      if (start + iter->length >= new_offset) {
+      if (start + iter->length <= new_offset) {
+        to_replace.push_back(bluefs_extent_t(id, iter->offset, iter->length));
+        new_extents_index.emplace_back(start);
+        start += iter->length;
+      } else {
         auto size = new_offset - start;
         if (size > 0) {
           to_replace.push_back(
-            bluefs_extent_t(iter->bdev, iter->offset, size));
+              bluefs_extent_t(iter->bdev, iter->offset, size));
           new_extents_index.emplace_back(start);
           if (iter->length - size > 0) {
             to_release[iter->bdev].insert(iter->offset + size, iter->length - size);
@@ -110,43 +116,48 @@ struct bluefs_fnode_t {
         }
         break;
       }
-      to_replace.push_back(bluefs_extent_t(id, iter->offset, iter->length));
-      new_extents_index.emplace_back(start);
-      start += iter->length;
     }
     ceph_assert(start == new_offset);
 
-    auto end = new_offset;
     auto new_start = new_offset;
     for (auto new_extent : new_extents) {
       to_replace.push_back(
-        bluefs_extent_t(id, new_extent.offset, new_extent.length));
+          bluefs_extent_t(id, new_extent.offset, new_extent.length));
       new_extents_index.emplace_back(new_start);
       new_start += new_extent.length;
-      end += new_extent.length;
     }
 
     if (iter != extents.end()) {
+      start += iter->length;
       ++iter;
       for (; iter != extents.end() ; ++iter) {
-        if (end < start + iter->length) {
-          if (end > start) {
-            auto removal_size = end - start;
+        if (new_start < start + iter->length) {
+          if (new_start > start) {
+            auto removal_size = new_start - start;
             to_replace.push_back(
-              bluefs_extent_t(
-                iter->bdev,
-                iter->offset + removal_size,
-                iter->length - removal_size));
+                bluefs_extent_t(
+                  iter->bdev,
+                  iter->offset + removal_size,
+                  iter->length - removal_size));
             new_extents_index.emplace_back(new_start);
             to_release[iter->bdev].insert(iter->offset, removal_size);
           } else {
             to_replace.push_back(*iter);
             new_extents_index.emplace_back(new_start);
           }
+          start += iter->length;
+          new_start += iter->length;
+          iter++;
+          break;
         } else {
           to_release[iter->bdev].insert(iter->offset, iter->length);
         }
         start += iter->length;
+        new_start += iter->length;
+      }
+      for (; iter != extents.end() ; ++iter) {
+        to_replace.push_back(*iter);
+        new_extents_index.emplace_back(new_start);
         new_start += iter->length;
       }
     }
@@ -155,8 +166,8 @@ struct bluefs_fnode_t {
     extents = to_replace;
     extents_index = new_extents_index;
 
-    if (allocated < end) {
-      allocated = end;
+    if (allocated < new_start) {
+      allocated = new_start;
     }
   }
 

@@ -340,21 +340,53 @@ static void aio_cb(void * priv, void* priv2) {
 }
 
 void BlueFS::aio_finish(IOContext* ioc) {
-  auto& fnode = ioc->fnode;
+  auto fnode = ioc->fnode;
   ceph_assert(fnode != nullptr);
-
   if (fnode->ino <= 1) {
     return;
   }
   PExtentVector extents;
+  auto file_offset_iter = ioc->file_offsets.begin();
+  uint64_t start_offset = *file_offset_iter;
+  uint64_t length = 0;
+  dout(20) << __func__ << " start" << dendl;
   for (auto& addr : ioc->post_addrs) {
+    ceph_assert(file_offset_iter != ioc->file_offsets.end());
+    if (length == 0) {
+      start_offset = *file_offset_iter;
+      length = addr.length;
+    } else {
+      if (start_offset + length == *file_offset_iter) {
+        length += addr.length;
+      } else {
+        dout(20) << __func__ << " before " << fnode->extents << " add " << extents << " to "<< start_offset <<dendl;
+        fnode->replace_or_insert_extents(
+            ioc->id,
+            start_offset,
+            extents,
+            pending_release);
+      }
+      dout(20) << __func__ << " after " << fnode->extents << dendl;
+      extents.clear();
+      start_offset = *file_offset_iter;
+      length = addr.length;
+    }
+
     extents.push_back(bluestore_pextent_t(addr.offset, addr.length));
+    file_offset_iter++;
   }
-  fnode->replace_or_insert_extents(
-    ioc->id,
-    ioc->file_offset,
-    extents,
-    pending_release);
+  if (extents.size() > 0) {
+    dout(20) << __func__ << " before " << fnode->extents << " add " << extents << " to "<< start_offset <<dendl;
+    fnode->replace_or_insert_extents(
+        ioc->id,
+        start_offset,
+        extents,
+        pending_release);
+
+    dout(20) << __func__ << " after " << fnode->extents << dendl;
+  }
+  ioc->file_offsets.clear();
+  dout(20) << __func__ << " end" << dendl;
 }
 
 int BlueFS::add_block_device(unsigned id, const string& path, bool trim,
@@ -2051,7 +2083,7 @@ int64_t BlueFS::_read(
   FileReaderBuffer *buf = &(h->buf);
 
   bool prefetch = !outbl && !out;
-  dout(10) << __func__ << " h " << h
+  dout(20) << __func__ << " h " << h
            << " 0x" << std::hex << off << "~" << len << std::dec
 	   << " from " << h->file->fnode
 	   << (prefetch ? " prefetch" : "")
@@ -2937,7 +2969,8 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
     } else {
       if (zns_fs) {
         auto ioc = h->iocv[p->bdev];
-        ioc->file_offset = offset;
+        //dout(1) << __func__ << " offset " << std::hex<< offset + bloff << dendl;
+        ioc->file_offsets.push_back(offset + bloff);
         if (h->file->fnode.ino <= 1) {
           bdev[p->bdev]->aio_legacy_write(p->offset + x_off, t, ioc, buffered, h->write_hint);
         } else {
@@ -2994,6 +3027,7 @@ void BlueFS::wait_for_aio(FileWriter *h)
   lgeneric_subdout(cct, bluefs, 10) << __func__;
   start = ceph_clock_now();
   *_dout << " " << h << dendl;
+  dout(10) << __func__ << " " << h << " start" << dendl;
   for (auto p : h->iocv) {
     if (p) {
       p->aio_wait();

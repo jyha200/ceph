@@ -105,7 +105,7 @@ public:
 
   // for zns fs
   unsigned id = 0;
-  uint64_t file_offset = 0;
+  std::list<uint64_t> file_offsets;
 
   explicit IOContext(CephContext* cct, void *p, bool allow_eio = false)
     : cct(cct), priv(p), allow_eio(allow_eio)

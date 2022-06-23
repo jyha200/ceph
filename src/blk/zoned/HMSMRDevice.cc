@@ -66,6 +66,7 @@ static void hmsmr_cb(void* priv, void* priv2)
     if (ioc->priv != nullptr) {
       if (ioc->num_running == 0) {
         casted_priv->cb(casted_priv->cbpriv, ioc->priv);
+        bdev->print(ioc);
         ioc->aio_wake();
       }
     } else {
@@ -76,6 +77,10 @@ static void hmsmr_cb(void* priv, void* priv2)
       ioc->post_addrs.clear();
     }
   }
+}
+
+void HMSMRDevice::print(IOContext* ioc) {
+  //dout(1) << __func__ << " " << ioc->num_running << " " << ioc->num_pending << dendl;
 }
 
 HMSMRDevice::HMSMRDevice(CephContext* cct,

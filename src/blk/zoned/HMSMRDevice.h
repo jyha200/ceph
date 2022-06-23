@@ -51,6 +51,7 @@ public:
               aio_callback_t d_cb, void *d_cbpriv);
 
   static bool support(const std::string& path);
+  void print(IOContext* ioc);
 
   // open/close hooks for libzbd
   int _post_open() override;
