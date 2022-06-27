@@ -106,6 +106,7 @@ public:
   // for zns fs
   unsigned id = 0;
   std::list<uint64_t> file_offsets;
+  bool done = true;
 
   explicit IOContext(CephContext* cct, void *p, bool allow_eio = false)
     : cct(cct), priv(p), allow_eio(allow_eio)
@@ -120,12 +121,20 @@ public:
   }
   void release_running_aios();
   void aio_wait();
+  void aio_wait_with_priv();
   uint64_t get_num_ios() const;
+
+  void mark_aio_submit() {
+    std::lock_guard l(lock);
+    done = false;
+  }
 
   void aio_wake() {
     ceph_assert(num_running == 0);
+    ceph_assert(priv != nullptr);
 
     std::lock_guard l(lock);
+    done = true;
     cond.notify_all();
   }
 

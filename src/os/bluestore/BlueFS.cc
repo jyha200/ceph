@@ -375,6 +375,9 @@ static void aio_cb(void * priv, void* priv2) {
 }
 
 void BlueFS::aio_finish(IOContext* ioc) {
+  ioc->pending_aios.clear();
+  ioc->post_addrs.clear();
+  dout(10) << __func__ << " " << ioc << dendl;
   return;
 }
 
@@ -421,10 +424,7 @@ int BlueFS::add_block_device(unsigned id, const string& path, bool trim,
 	  << " size " << byte_u_t(b->get_size()) << dendl;
   bdev[id] = b;
   ioc[id] = new IOContext(cct, NULL);
-  if (zns_fs) {
-    ioc[id]->priv = static_cast<void*>(ioc[id]);
-    ioc[id]->id = id;
-  }
+
   if (_shared_alloc) {
     ceph_assert(!shared_alloc);
     shared_alloc = _shared_alloc;
@@ -2924,7 +2924,7 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
     dout(20) << __func__ << " waiting for previous aio to complete" << dendl;
     for (auto p : h->iocv) {
       if (p) {
-	p->aio_wait();
+	p->aio_wait_with_priv();
       }
     }
   }
@@ -2985,6 +2985,8 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
   for (unsigned i = 0; i < MAX_BDEV; ++i) {
     if (bdev[i]) {
       if (h->iocv[i] && h->iocv[i]->has_pending_aios()) {
+        h->iocv[i]->mark_aio_submit();
+        dout(20) << __func__ << " submit " << h->iocv[i] << dendl;
         bdev[i]->aio_submit(h->iocv[i]);
       }
     }
@@ -3019,7 +3021,7 @@ void BlueFS::wait_for_aio(FileWriter *h)
   dout(10) << __func__ << " " << h << " start" << dendl;
   for (auto p : h->iocv) {
     if (p) {
-      p->aio_wait();
+      p->aio_wait_with_priv();
     }
   }
   dout(10) << __func__ << " " << h << " done in " << (ceph_clock_now() - start) << dendl;
@@ -3515,7 +3517,7 @@ void BlueFS::_close_writer(FileWriter *h)
   for (unsigned i=0; i<MAX_BDEV; ++i) {
     if (bdev[i]) {
       if (h->iocv[i]) {
-	h->iocv[i]->aio_wait();
+	h->iocv[i]->aio_wait_with_priv();
 	delete h->iocv[i];
       }
     }

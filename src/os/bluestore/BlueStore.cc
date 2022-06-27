@@ -12139,6 +12139,8 @@ void BlueStore::txc_aio_finish(void *p) {
         o->extent_map.dirty_range(dirty_start, dirty_end - dirty_start);
       }
     }
+    ioc->pending_aios.clear();
+    ioc->post_addrs.clear();
     txc->post_wctxs.clear();
 
     _txc_write_nodes(txc, txc->t);
