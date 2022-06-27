@@ -185,6 +185,10 @@ private:
 
 void BlueFS::append_try_flush(FileWriter *h, const char* buf, size_t len) {
   size_t max_size = 1ull << 30; // cap to 1GB
+  bool need_preflush = false;
+  if (h->writer_type == WRITER_WAL) {
+    need_preflush = (len == 0xc);
+  }
 
   while (len > 0) {
     bool need_flush = true;
@@ -195,9 +199,6 @@ void BlueFS::append_try_flush(FileWriter *h, const char* buf, size_t len) {
       buf += l;
       len -= l;
       need_flush = h->get_buffer_length() >= cct->_conf->bluefs_min_flush_size;
-      if (h->writer_type == WRITER_WAL) {
-//        need_flush = true;
-      }
     }
     if (need_flush) {
       flush(h, true);
@@ -205,6 +206,11 @@ void BlueFS::append_try_flush(FileWriter *h, const char* buf, size_t len) {
       // loop doesn't iterate forever
       ceph_assert(h->get_buffer_length() < max_size);
     }
+  }
+
+  if (need_preflush) {
+    dout(20) << __func__ << " ino " << std::hex <<h->file->fnode.ino << " start flush" <<dendl;
+    flush(h, true);
   }
 }
 
