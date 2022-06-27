@@ -605,36 +605,12 @@ public:
     ceph_assert(r == 0);
   }
 
-  void append_try_flush(FileWriter *h, const char* buf, size_t len) {
-    size_t max_size = 1ull << 30; // cap to 1GB
-    while (len > 0) {
-      bool need_flush = true;
-      auto l0 = h->get_buffer_length();
-      if (l0 < max_size) {
-	size_t l = std::min(len, max_size - l0);
-	h->append(buf, l);
-	buf += l;
-	len -= l;
-	need_flush = h->get_buffer_length() >= cct->_conf->bluefs_min_flush_size;
-      }
-      if (need_flush) {
-	flush(h, true);
-	// make sure we've made any progress with flush hence the
-	// loop doesn't iterate forever
-	ceph_assert(h->get_buffer_length() < max_size);
-      }
-    }
-  }
+  void append_try_flush(FileWriter *h, const char* buf, size_t len);
   void flush_range(FileWriter *h, uint64_t offset, uint64_t length) {
     std::lock_guard l(lock);
     _flush_range(h, offset, length);
   }
-  int fsync(FileWriter *h) {
-    std::unique_lock l(lock);
-    int r = _fsync(h, l);
-    _maybe_compact_log(l);
-    return r;
-  }
+  int fsync(FileWriter *h);
   int64_t read(FileReader *h, uint64_t offset, size_t len,
 	   ceph::buffer::list *outbl, char *out) {
     // no need to hold the global lock here; we only touch h and

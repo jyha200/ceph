@@ -183,6 +183,41 @@ private:
   }
 };
 
+void BlueFS::append_try_flush(FileWriter *h, const char* buf, size_t len) {
+  size_t max_size = 1ull << 30; // cap to 1GB
+
+  while (len > 0) {
+    bool need_flush = true;
+    auto l0 = h->get_buffer_length();
+    if (l0 < max_size) {
+      size_t l = std::min(len, max_size - l0);
+      h->append(buf, l);
+      buf += l;
+      len -= l;
+      need_flush = h->get_buffer_length() >= cct->_conf->bluefs_min_flush_size;
+      if (h->writer_type == WRITER_WAL) {
+        if (h->get_buffer_length() % 4096 == 0) {
+    //      need_flush = true;
+        }
+      }
+    }
+    if (need_flush) {
+      flush(h, true);
+      // make sure we've made any progress with flush hence the
+      // loop doesn't iterate forever
+      ceph_assert(h->get_buffer_length() < max_size);
+    }
+  }
+}
+
+int BlueFS::fsync(FileWriter *h) {
+  std::unique_lock l(lock);
+  int r = _fsync(h, l);
+  _maybe_compact_log(l);
+
+  return r;
+}
+
 BlueFS::BlueFS(CephContext* cct)
   : cct(cct),
     bdev(MAX_BDEV),
@@ -340,53 +375,7 @@ static void aio_cb(void * priv, void* priv2) {
 }
 
 void BlueFS::aio_finish(IOContext* ioc) {
-  auto fnode = ioc->fnode;
-  ceph_assert(fnode != nullptr);
-  if (fnode->ino <= 1) {
-    return;
-  }
-  PExtentVector extents;
-  auto file_offset_iter = ioc->file_offsets.begin();
-  uint64_t start_offset = *file_offset_iter;
-  uint64_t length = 0;
-  dout(20) << __func__ << " start" << dendl;
-  for (auto& addr : ioc->post_addrs) {
-    ceph_assert(file_offset_iter != ioc->file_offsets.end());
-    if (length == 0) {
-      start_offset = *file_offset_iter;
-      length = addr.length;
-    } else {
-      if (start_offset + length == *file_offset_iter) {
-        length += addr.length;
-      } else {
-        dout(20) << __func__ << " before " << fnode->extents << " add " << extents << " to "<< start_offset <<dendl;
-        fnode->replace_or_insert_extents(
-            ioc->id,
-            start_offset,
-            extents,
-            pending_release);
-      }
-      dout(20) << __func__ << " after " << fnode->extents << dendl;
-      extents.clear();
-      start_offset = *file_offset_iter;
-      length = addr.length;
-    }
-
-    extents.push_back(bluestore_pextent_t(addr.offset, addr.length));
-    file_offset_iter++;
-  }
-  if (extents.size() > 0) {
-    dout(20) << __func__ << " before " << fnode->extents << " add " << extents << " to "<< start_offset <<dendl;
-    fnode->replace_or_insert_extents(
-        ioc->id,
-        start_offset,
-        extents,
-        pending_release);
-
-    dout(20) << __func__ << " after " << fnode->extents << dendl;
-  }
-  ioc->file_offsets.clear();
-  dout(20) << __func__ << " end" << dendl;
+  return;
 }
 
 int BlueFS::add_block_device(unsigned id, const string& path, bool trim,
@@ -2970,11 +2959,11 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
       if (zns_fs) {
         auto ioc = h->iocv[p->bdev];
         //dout(1) << __func__ << " offset " << std::hex<< offset + bloff << dendl;
-        ioc->file_offsets.push_back(offset + bloff);
         if (h->file->fnode.ino <= 1) {
           bdev[p->bdev]->aio_legacy_write(p->offset + x_off, t, ioc, buffered, h->write_hint);
         } else {
-          bdev[p->bdev]->aio_write(p->offset + x_off, t, ioc, buffered, h->write_hint);
+          buffered = false;
+          bdev[p->bdev]->aio_legacy_write(p->offset + x_off, t, ioc, buffered, h->write_hint);
         }
       } else {
         bdev[p->bdev]->aio_write(p->offset + x_off, t, h->iocv[p->bdev], buffered, h->write_hint);
@@ -3335,7 +3324,16 @@ int BlueFS::_allocate(uint8_t id, uint64_t len,
 
   if (zns_fs) {
     ceph_assert(offset < 0xFFFFFFFFFFFFFFFFUL);
-    node->replace_or_insert_extents(id, aligned_offset, extents, pending_release);
+    if (node->allocated == aligned_offset) {
+      for (auto& p : extents) {
+        dout(10) << __func__ << " allocated " << node->allocated << " offset " << p.offset
+          << " length " << p.length << dendl;
+          node->append_extent(bluefs_extent_t(id, p.offset, p.length));
+      }
+    } else {
+        dout(10) << __func__ << " replace_or~ " << " allocated "<< node->allocated << " aligned_offset " << aligned_offset << dendl;
+      node->replace_or_insert_extents(id, aligned_offset, extents, pending_release);
+    }
   } else {
     for (auto& p : extents) {
       node->append_extent(bluefs_extent_t(id, p.offset, p.length));
