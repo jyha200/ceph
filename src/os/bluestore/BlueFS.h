@@ -186,6 +186,7 @@ public:
     int write_hint = WRITE_LIFE_NOT_SET;
 
     ceph::mutex lock = ceph::make_mutex("BlueFS::FileWriter::lock");
+    std::array<std::list<IOContext*>,MAX_BDEV> iocv_zns; ///< for each bdev
     std::array<IOContext*,MAX_BDEV> iocv; ///< for each bdev
     std::array<bool, MAX_BDEV> dirty_devs;
 
@@ -236,6 +237,8 @@ public:
       return pos + buffer.length();
     }
   };
+
+  IOContext* create_ioc(FileWriter* h, int bdev_id);
 
   struct FileReaderBuffer {
     MEMPOOL_CLASS_HELPERS();

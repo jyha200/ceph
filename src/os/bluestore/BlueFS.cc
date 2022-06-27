@@ -196,9 +196,7 @@ void BlueFS::append_try_flush(FileWriter *h, const char* buf, size_t len) {
       len -= l;
       need_flush = h->get_buffer_length() >= cct->_conf->bluefs_min_flush_size;
       if (h->writer_type == WRITER_WAL) {
-        if (h->get_buffer_length() % 4096 == 0) {
-    //      need_flush = true;
-        }
+//        need_flush = true;
       }
     }
     if (need_flush) {
@@ -2833,6 +2831,17 @@ int BlueFS::_signal_dirty_to_log(FileWriter *h)
   return 0;
 }
 
+IOContext* BlueFS::create_ioc(FileWriter* h, int bdev_id)
+{
+  auto ioc = new IOContext(cct, NULL);
+  if (zns_fs) {
+    ioc->priv = ioc;
+    ioc->fnode = &h->file->fnode;
+    ioc->id = bdev_id;
+  }
+  return ioc;
+}
+
 int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
 {
   dout(10) << __func__ << " " << h << " pos 0x" << std::hex << h->pos
@@ -2922,9 +2931,11 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
     offset -= partial;
     length += partial;
     dout(20) << __func__ << " waiting for previous aio to complete" << dendl;
-    for (auto p : h->iocv) {
-      if (p) {
-	p->aio_wait_with_priv();
+    if (zns_fs == false) {
+      for (auto p : h->iocv) {
+        if (p) {
+          p->aio_wait();
+        }
       }
     }
   }
@@ -2949,6 +2960,7 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
 
   uint64_t bloff = 0;
   uint64_t bytes_written_slow = 0;
+  std::list<IOContext*> new_ioc;
   while (length > 0) {
     uint64_t x_len = std::min(p->length - x_off, length);
     bufferlist t;
@@ -2956,8 +2968,13 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
     if (cct->_conf->bluefs_sync_write) {
       bdev[p->bdev]->write(p->offset + x_off, t, buffered, h->write_hint);
     } else {
+      IOContext* ioc = nullptr;
       if (zns_fs) {
-        auto ioc = h->iocv[p->bdev];
+        ioc = create_ioc(h, p->bdev);
+      } else {
+        ioc =  h->iocv[p->bdev];
+      }
+      if (zns_fs) {
         //dout(1) << __func__ << " offset " << std::hex<< offset + bloff << dendl;
         if (h->file->fnode.ino <= 1) {
           bdev[p->bdev]->aio_legacy_write(p->offset + x_off, t, ioc, buffered, h->write_hint);
@@ -2966,7 +2983,11 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
           bdev[p->bdev]->aio_legacy_write(p->offset + x_off, t, ioc, buffered, h->write_hint);
         }
       } else {
-        bdev[p->bdev]->aio_write(p->offset + x_off, t, h->iocv[p->bdev], buffered, h->write_hint);
+        bdev[p->bdev]->aio_write(p->offset + x_off, t, ioc, buffered, h->write_hint);
+      }
+      if (zns_fs) {
+        new_ioc.push_back(ioc);
+        h->iocv_zns[p->bdev].push_back(ioc);
       }
     }
     h->dirty_devs[p->bdev] = true;
@@ -2982,12 +3003,22 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
   if (bytes_written_slow) {
     logger->inc(l_bluefs_bytes_written_slow, bytes_written_slow);
   }
-  for (unsigned i = 0; i < MAX_BDEV; ++i) {
-    if (bdev[i]) {
-      if (h->iocv[i] && h->iocv[i]->has_pending_aios()) {
-        h->iocv[i]->mark_aio_submit();
-        dout(20) << __func__ << " submit " << h->iocv[i] << dendl;
-        bdev[i]->aio_submit(h->iocv[i]);
+  if (zns_fs) {
+    for(auto ioc : new_ioc) {
+      if (ioc && ioc->has_pending_aios()) {
+        ioc->mark_aio_submit();
+        dout(20) << __func__ << " submit " << ioc << dendl;
+        bdev[ioc->id]->aio_submit(ioc);
+      }
+    }
+  } else {
+    for (unsigned i = 0; i < MAX_BDEV; ++i) {
+      if (bdev[i]) {
+        if (h->iocv[i] && h->iocv[i]->has_pending_aios()) {
+          h->iocv[i]->mark_aio_submit();
+          dout(20) << __func__ << " submit " << h->iocv[i] << dendl;
+          bdev[i]->aio_submit(h->iocv[i]);
+        }
       }
     }
   }
@@ -3002,9 +3033,19 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
 // memory indefinitely (along with their bufferlist refs).
 void BlueFS::_claim_completed_aios(FileWriter *h, list<aio_t> *ls)
 {
-  for (auto p : h->iocv) {
-    if (p) {
-      ls->splice(ls->end(), p->running_aios);
+  if (zns_fs) {
+    for (auto& p : h->iocv_zns) {
+      for (auto ioc : p) {
+        if (ioc) {
+          ls->splice(ls->end(), ioc->running_aios);
+        }
+      }
+    }
+  } else {
+    for (auto p : h->iocv) {
+      if (p) {
+        ls->splice(ls->end(), p->running_aios);
+      }
     }
   }
   dout(10) << __func__ << " got " << ls->size() << " aios" << dendl;
@@ -3019,9 +3060,23 @@ void BlueFS::wait_for_aio(FileWriter *h)
   start = ceph_clock_now();
   *_dout << " " << h << dendl;
   dout(10) << __func__ << " " << h << " start" << dendl;
-  for (auto p : h->iocv) {
-    if (p) {
-      p->aio_wait_with_priv();
+
+  if (zns_fs) {
+    for (auto& p : h->iocv_zns) {
+      for (auto ioc : p) {
+        if (ioc) {
+          ioc->aio_wait_with_priv();
+          delete ioc;
+        }
+      }
+      p.clear();
+    }
+  }
+  else {
+    for (auto p : h->iocv) {
+      if (p) {
+        p->aio_wait();
+      }
     }
   }
   dout(10) << __func__ << " " << h << " done in " << (ceph_clock_now() - start) << dendl;
@@ -3500,11 +3555,6 @@ BlueFS::FileWriter *BlueFS::_create_writer(FileRef f)
   for (unsigned i = 0; i < MAX_BDEV; ++i) {
     if (bdev[i]) {
       w->iocv[i] = new IOContext(cct, NULL);
-      if (zns_fs) {
-        w->iocv[i]->priv = w->iocv[i];
-        w->iocv[i]->fnode = &w->file->fnode;
-        w->iocv[i]->id = i;
-      }
     }
   }
   return w;
@@ -3516,9 +3566,19 @@ void BlueFS::_close_writer(FileWriter *h)
   //h->buffer.reassign_to_mempool(mempool::mempool_bluefs_file_writer);
   for (unsigned i=0; i<MAX_BDEV; ++i) {
     if (bdev[i]) {
-      if (h->iocv[i]) {
-	h->iocv[i]->aio_wait_with_priv();
-	delete h->iocv[i];
+      if (zns_fs) {
+        for (auto& ioc : h->iocv_zns[i]) {
+          if (ioc) {
+            ioc->aio_wait_with_priv();
+            delete ioc;
+          }
+        }
+        h->iocv_zns[i].clear();
+      } else {
+        if (h->iocv[i]) {
+          h->iocv[i]->aio_wait();
+          delete h->iocv[i];
+        }
       }
     }
   }
