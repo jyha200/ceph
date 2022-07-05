@@ -54,6 +54,7 @@ class ZonedFreelistManager : public FreelistManager {
       uint64_t zone, uint64_t num_bytes, KeyValueDB::Transaction txn);
 
   int _read_cfg(cfg_reader_t cfg_reader);
+  std::vector<zone_state_t> zone_states;
 
 public:
   ZonedFreelistManager(CephContext* cct,
@@ -104,7 +105,7 @@ public:
   void get_meta(uint64_t target_size,
 		std::vector<std::pair<std::string, std::string>>*) const override;
 
-  std::vector<zone_state_t> get_zone_states(KeyValueDB *kvdb) const;
+  std::vector<zone_state_t> get_zone_states(KeyValueDB *kvdb);
 
   void mark_zone_to_clean_free(uint64_t zone,
 			       KeyValueDB *kvdb);

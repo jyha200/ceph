@@ -39,7 +39,7 @@ void ZonedFreelistManager::write_zone_state_delta_to_db(
   _key_encode_u64(zone_num, &key);
   bufferlist bl;
   zone_state.encode(bl);
-  txn->merge(info_prefix, key, bl);
+  txn->set(info_prefix, key, bl);
 }
 
 void ZonedFreelistManager::write_zone_state_reset_to_db(
@@ -63,7 +63,6 @@ void ZonedFreelistManager::load_zone_state_from_db(
   uint64_t zone_num_from_db;
   _key_decode_u64(k.c_str(), &zone_num_from_db);
   ceph_assert(zone_num_from_db == zone_num);
-
   bufferlist bl = it->value();
 	if (bl.length() == 0) {
 		return;
@@ -75,9 +74,10 @@ void ZonedFreelistManager::load_zone_state_from_db(
 void ZonedFreelistManager::init_zone_states(KeyValueDB::Transaction txn)
 {
   dout(10) << __func__ << dendl;
+  zone_states.clear();
+  zone_states.resize(num_zones);
   for (uint64_t zone_num = 0; zone_num < num_zones; ++zone_num) {
-    zone_state_t zone_state;
-    write_zone_state_reset_to_db(zone_num, zone_state, txn);
+    write_zone_state_reset_to_db(zone_num, zone_states[zone_num], txn);
   }
 }
 
@@ -165,6 +165,9 @@ int ZonedFreelistManager::init(
 
   ceph_assert(num_zones == size / zone_size);
 
+  zone_states.clear();
+  zone_states.resize(num_zones);
+
   dout(10) << __func__ << std::hex
 	   << " size 0x" << size
 	   << " bytes_per_block 0x" << bytes_per_block
@@ -223,7 +226,7 @@ bool ZonedFreelistManager::enumerate_next(
     ++enumerate_zone_num;
   }
 
-  zone_state_t zone_state;
+  zone_state_t& zone_state = zone_states[enumerate_zone_num];
   load_zone_state_from_db(enumerate_zone_num, zone_state, enumerate_p);
 
   *offset = enumerate_zone_num * zone_size + zone_state.get_write_pointer();
@@ -256,7 +259,7 @@ void ZonedFreelistManager::allocate(
     uint64_t this_len = std::min(length, zone_size - offset % zone_size);
     dout(10) << __func__ << " 0x" << std::hex << offset << "~" << this_len
 	     << " zone 0x" << zone_num << std::dec << dendl;
-    zone_state_t zone_state;
+    zone_state_t& zone_state = zone_states[zone_num];
     zone_state.increment_write_pointer(this_len);
     write_zone_state_delta_to_db(zone_num, zone_state, txn);
     offset += this_len;
@@ -280,7 +283,7 @@ void ZonedFreelistManager::release(
     uint64_t this_len = std::min(length, zone_size - offset % zone_size);
     dout(10) << __func__ << " 0x" << std::hex << offset << "~" << this_len
 	     << " zone 0x" << zone_num << std::dec << dendl;
-    zone_state_t zone_state;
+    zone_state_t& zone_state = zone_states[zone_num];
     zone_state.increment_num_dead_bytes(this_len);
     write_zone_state_delta_to_db(zone_num, zone_state, txn);
     length -= this_len;
@@ -302,17 +305,17 @@ void ZonedFreelistManager::get_meta(
 }
 
 std::vector<zone_state_t> ZonedFreelistManager::get_zone_states(
-  KeyValueDB *kvdb) const
+  KeyValueDB *kvdb)
 {
-  std::vector<zone_state_t> zone_states;
+  std::vector<zone_state_t> zone_states_ret;
   auto p = kvdb->get_iterator(info_prefix);
   uint64_t zone_num = 0;
   for (p->lower_bound(string()); p->valid(); p->next(), ++zone_num) {
-    zone_state_t zone_state;
+    zone_state_t& zone_state = zone_states[zone_num];
     load_zone_state_from_db(zone_num, zone_state, p);
-    zone_states.emplace_back(zone_state);
+    zone_states_ret.emplace_back(zone_state);
   }
-  return zone_states;
+  return zone_states_ret;
 }
 
 // TODO: The following function is copied almost verbatim from
