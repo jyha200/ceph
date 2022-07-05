@@ -575,12 +575,14 @@ static int get_key_pool_stat(const string& key, uint64_t* pool_id)
 static void get_zone_offset_object_key(
   uint32_t zone,
   uint64_t offset,
+  uint32_t create,
   ghobject_t oid,
   std::string *key)
 {
   key->clear();
   _key_encode_u32(zone, key);
   _key_encode_u64(offset, key);
+  _key_encode_u32(create, key);
   _get_object_key(oid, key);
 }
 
@@ -588,6 +590,7 @@ static int get_key_zone_offset_object(
   const string& key,
   uint32_t *zone,
   uint64_t *offset,
+  uint32_t *create,
   ghobject_t *oid)
 {
   const char *p = key.c_str();
@@ -595,6 +598,7 @@ static int get_key_zone_offset_object(
     return -1;
   p = _key_decode_u32(p, zone);
   p = _key_decode_u64(p, offset);
+  p = _key_decode_u32(p, create);
   int r = _get_key_object(p, oid);
   if (r < 0) {
     return r;
@@ -8914,7 +8918,8 @@ int BlueStore::_fsck_on_open(BlueStore::FSCKDepth depth, bool repair)
 	  uint64_t offset = 0;
 	  ghobject_t oid;
 	  string key = it->key();
-	  int r = get_key_zone_offset_object(key, &zone, &offset, &oid);
+	  uint32_t create;
+	  int r = get_key_zone_offset_object(key, &zone, &offset, &create, &oid);
 	  if (r < 0) {
 	    derr << "fsck error: invalid zone ref key " << pretty_binary_string(key)
 		 << dendl;
@@ -8924,6 +8929,11 @@ int BlueStore::_fsck_on_open(BlueStore::FSCKDepth depth, bool repair)
 	    ++errors;
 	    continue;
 	  }
+    if (create == 0) {
+      handle_removed_zone_key(it, zone, offset, oid);
+      continue;
+    }
+
 	  dout(30) << " zone ref 0x" << std::hex << zone << " offset 0x" << offset
 		   << " -> " << std::dec << oid << dendl;
 	  if (zone_refs[zone].count(oid)) {
@@ -12286,6 +12296,7 @@ void BlueStore::_txc_finish_io(TransContext *txc)
 
   OpSequencer *osr = txc->osr.get();
   std::lock_guard l(osr->qlock);
+
   txc->set_state(TransContext::STATE_IO_DONE);
   txc->ioc.release_running_aios();
   OpSequencer::q_list_t::iterator p = osr->q.iterator_to(*txc);
@@ -12423,8 +12434,9 @@ void BlueStore::_txc_finalize_kv(TransContext *txc, KeyValueDB::Transaction t)
 	       << " offset 0x" << i.second << std::dec
 	       << " -> " << i.first.first->oid << dendl;
       string key;
-      get_zone_offset_object_key(i.first.second, i.second, i.first.first->oid, &key);
-      txc->t->rmkey(PREFIX_ZONED_CL_INFO, key);
+      get_zone_offset_object_key(i.first.second, i.second, false, i.first.first->oid, &key);
+      bufferlist v;
+      txc->t->set(PREFIX_ZONED_CL_INFO, key, v);
     }
     for (auto& i : txc->new_zone_offset_refs) {
       // (zone, offset) -> oid
@@ -12432,7 +12444,7 @@ void BlueStore::_txc_finalize_kv(TransContext *txc, KeyValueDB::Transaction t)
 	       << " offset 0x" << i.second << std::dec
 	       << " -> " << i.first.first->oid << dendl;
       string key;
-      get_zone_offset_object_key(i.first.second, i.second, i.first.first->oid, &key);
+      get_zone_offset_object_key(i.first.second, i.second, true, i.first.first->oid, &key);
       bufferlist v;
       txc->t->set(PREFIX_ZONED_CL_INFO, key, v);
     }
@@ -13289,6 +13301,34 @@ void BlueStore::_zoned_cleaner_thread()
   dout(10) << __func__ << " finish" << dendl;
   zoned_cleaner_started = false;
 }
+void BlueStore::handle_removed_zone_key(
+  KeyValueDB::Iterator& it,
+  uint32_t zone,
+  uint64_t offset,
+  ghobject_t& oid)
+{
+  it->next();
+  ceph_assert(it->valid());
+  uint32_t z_now;
+  uint64_t offset_now;
+  ghobject_t oid_now;
+  string k = it->key();
+  uint32_t create_now;
+
+  int r = get_key_zone_offset_object(k, &z_now, &offset_now, &create_now, &oid_now);
+  if (r < 0) {
+    derr << __func__ << " failed to decode zone ref " << pretty_binary_string(k)
+      << dendl;
+    return;
+  }
+  // next key should have 'create' flag
+  ceph_assert(zone == z_now);
+  ceph_assert(offset == offset_now);
+  ceph_assert(create_now == true);
+  ceph_assert(oid == oid_now);
+  // Skip removed entry
+  // TODO remove two key/value pairs
+}
 
 void BlueStore::_zoned_clean_zone(
   uint64_t zone,
@@ -13300,13 +13340,14 @@ void BlueStore::_zoned_clean_zone(
 
   KeyValueDB::Iterator it = db->get_iterator(PREFIX_ZONED_CL_INFO);
   std::string zone_start;
-  get_zone_offset_object_key(zone, 0, ghobject_t(), &zone_start);
+  get_zone_offset_object_key(zone, 0, false, ghobject_t(), &zone_start);
   for (it->lower_bound(zone_start); it->valid(); it->next()) {
     uint32_t z;
     uint64_t offset;
     ghobject_t oid;
     string k = it->key();
-    int r = get_key_zone_offset_object(k, &z, &offset, &oid);
+    uint32_t create;
+    int r = get_key_zone_offset_object(k, &z, &offset, &create, &oid);
     if (r < 0) {
       derr << __func__ << " failed to decode zone ref " << pretty_binary_string(k)
 	   << dendl;
@@ -13316,6 +13357,12 @@ void BlueStore::_zoned_clean_zone(
       dout(10) << __func__ << " reached end of zone refs" << dendl;
       break;
     }
+
+    if (create == 0) {
+      handle_removed_zone_key(it, z, offset, oid);
+      continue;
+    }
+
     dout(10) << __func__ << " zone 0x" << std::hex << zone << " offset 0x" << offset
 	     << std::dec << " " << oid << dendl;
     _clean_some(oid, zone);
@@ -16528,13 +16575,14 @@ int BlueStore::_rename(TransContext *txc,
 	       << " offset 0x" << offset << std::dec
 	       << " -> " << oldo->oid << dendl;
       string key;
-      get_zone_offset_object_key(zone, offset, oldo->oid, &key);
-      txc->t->rmkey(PREFIX_ZONED_CL_INFO, key);
+      get_zone_offset_object_key(zone, offset, false, oldo->oid, &key);
+      bufferlist v2;
+      txc->t->set(PREFIX_ZONED_CL_INFO, key, v2);
 
       dout(20) << __func__ << " add ref zone 0x" << std::hex << zone
 	       << " offset 0x" << offset << std::dec
 	       << " -> " << newo->oid << dendl;
-      get_zone_offset_object_key(zone, offset, newo->oid, &key);
+      get_zone_offset_object_key(zone, offset, true, newo->oid, &key);
       bufferlist v;
       txc->t->set(PREFIX_ZONED_CL_INFO, key, v);
     }
