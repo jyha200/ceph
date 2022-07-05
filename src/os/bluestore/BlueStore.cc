@@ -12840,8 +12840,42 @@ void BlueStore::_kv_stop()
   dout(10) << __func__ << " stopped" << dendl;
 }
 
+static const int TH_COUNT = 8;
+#if TH_COUNT != 1
+struct Shar {
+  std::deque<BlueStore::TransContext*> q;
+  std::mutex lock;
+  bool stop = false;
+  std::condition_variable cond_var;
+} shared[TH_COUNT];
+
+std::thread ths[TH_COUNT];
+#endif
+
 void BlueStore::_kv_sync_thread()
 {
+#if TH_COUNT != 1
+  static bool first = true;
+  if (first) {
+    first = false;
+    for (int i = 0 ; i < TH_COUNT ; i++) {
+      ths[i] = std::thread(
+        [this] (int i, Shar* shar) {
+          std::unique_lock l(shar->lock);
+          while(shar->stop == false) {
+            if (shar->q.empty()) {
+            shar->cond_var.notify_all();
+            shar->cond_var.wait(l);
+          } else {
+            auto txc = shar->q.front();
+            _txc_apply_kv(txc, false);
+            shar->q.pop_front();
+          }
+        }
+      }, i, &shared[i]);
+    }
+  }
+#endif
   dout(10) << __func__ << " start" << dendl;
   deque<DeferredBatch*> deferred_stable_queue; ///< deferred ios done + stable
   std::unique_lock l{kv_lock};
@@ -12969,19 +13003,43 @@ void BlueStore::_kv_sync_thread()
 	dout(10) << __func__ << " new_blobid_max " << new_blobid_max << dendl;
       }
 
-      for (auto txc : kv_committing) {
-	throttle.log_state_latency(*txc, logger, l_bluestore_state_kv_queued_lat);
-	if (txc->get_state() == TransContext::STATE_KV_QUEUED) {
-	  ++kv_submitted;
-	  _txc_apply_kv(txc, false);
-	  --txc->osr->kv_committing_serially;
-	} else {
-	  ceph_assert(txc->get_state() == TransContext::STATE_KV_SUBMITTED);
-	}
-	if (txc->had_ios) {
-	  --txc->osr->txc_with_unstable_io;
-	}
+#if TH_COUNT != 1
+    for (auto& shar : shared) {
+      shar.lock.lock();
+    }
+    int i = 0;
+#endif
+    for (auto txc : kv_committing) {
+      throttle.log_state_latency(*txc, logger, l_bluestore_state_kv_queued_lat);
+      if (txc->get_state() == TransContext::STATE_KV_QUEUED) {
+        ++kv_submitted;
+#if TH_COUNT != 1
+        shared[i].q.push_back(txc);
+        i = (i + 1) % TH_COUNT;
+#else
+        _txc_apply_kv(txc, false);
+#endif
+        --txc->osr->kv_committing_serially;
+      } else {
+        ceph_assert(txc->get_state() == TransContext::STATE_KV_SUBMITTED);
       }
+      if (txc->had_ios) {
+        --txc->osr->txc_with_unstable_io;
+      }
+    }
+
+#if TH_COUNT != 1
+    for (auto& shar : shared) {
+      shar.cond_var.notify_all();
+      shar.lock.unlock();
+    }
+    for (auto& shar : shared) {
+      std::unique_lock l(shar.lock);
+      while(shar.q.empty() == false) {
+        shar.cond_var.wait(l);
+      }
+    }
+#endif
 
       // release throttle *before* we commit.  this allows new ops
       // to be prepared and enter pipeline while we are waiting on
@@ -13102,6 +13160,14 @@ void BlueStore::_kv_sync_thread()
       // commit cycle.
       deferred_stable_queue.swap(deferred_done);
     }
+  }
+  for (int i = 0 ; i < TH_COUNT ; i++) {
+    {
+      std::unique_lock l(shared[i].lock);
+      shared[i].stop = true;
+      shared[i].cond_var.notify_all();
+    }
+    ths[i].join();
   }
   dout(10) << __func__ << " finish" << dendl;
   kv_sync_started = false;
