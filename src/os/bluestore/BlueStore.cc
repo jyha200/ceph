@@ -12085,23 +12085,26 @@ void BlueStore::_txc_update_store_statfs(TransContext *txc)
   logger->inc(l_bluestore_compressed_original, txc->statfs_delta.compressed_original());
 
   bufferlist bl;
-  txc->statfs_delta.encode(bl);
   if (per_pool_stat_collection) {
     string key;
     get_pool_stat_key(txc->osd_pool_id, &key);
-    txc->t->merge(PREFIX_STAT, key, bl);
+    {
+      std::lock_guard l(vstatfs_lock);
+      auto& stats = osd_pools[txc->osd_pool_id];
+      stats += txc->statfs_delta;
 
-    std::lock_guard l(vstatfs_lock);
-    auto& stats = osd_pools[txc->osd_pool_id];
-    stats += txc->statfs_delta;
-    
-    vstatfs += txc->statfs_delta; //non-persistent in this mode
+      vstatfs += txc->statfs_delta; //non-persistent in this mode
+      stats.encode(bl);
+    }
+    txc->t->set(PREFIX_STAT, key, bl);
 
   } else {
-    txc->t->merge(PREFIX_STAT, BLUESTORE_GLOBAL_STATFS_KEY, bl);
-
-    std::lock_guard l(vstatfs_lock);
-    vstatfs += txc->statfs_delta;
+    {
+      std::lock_guard l(vstatfs_lock);
+      vstatfs += txc->statfs_delta;
+      vstatfs.encode(bl);
+    }
+    txc->t->set(PREFIX_STAT, BLUESTORE_GLOBAL_STATFS_KEY, bl);
   } 
   txc->statfs_delta.reset();
 }
