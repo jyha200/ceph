@@ -12837,7 +12837,7 @@ void BlueStore::_kv_stop()
   dout(10) << __func__ << " stopped" << dendl;
 }
 
-static const int TH_COUNT = 8;
+static const int TH_COUNT = 16;
 #if TH_COUNT != 1
 struct Shar {
   std::deque<BlueStore::TransContext*> q;
