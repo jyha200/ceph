@@ -673,11 +673,15 @@ void KernelDevice::_aio_thread()
           }
           else if (--ioc->num_running == 0) {
             aio_callback(aio_callback_priv, ioc->priv);
+            ioc->pending_aios.clear();
+            ioc->post_addrs.clear();
           }
         } else {
           if(is_smr()) {
             aio_callback(aio_callback_priv, aio[i]);
           } else {
+            ioc->pending_aios.clear();
+            ioc->post_addrs.clear();
             ioc->try_aio_wake();
           }
         }

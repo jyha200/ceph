@@ -15354,7 +15354,7 @@ int BlueStore::_do_alloc_write(
     for (auto& p : extents) {
       txc->allocated.insert(p.offset, p.length);
     }
-    if (bdev->is_smr()) {
+    if (bdev->need_postpone_db_transaction()) {
       ceph_assert(wi.post_write_offset == 0);
       ceph_assert(wi.post_write_length == 0);
       wi.post_write_offset = p2align(b_off, min_alloc_size);
@@ -15801,7 +15801,7 @@ int BlueStore::_do_write(
 			  min_alloc_size);
   }
 
-  if (bdev->is_smr() && bdev->need_postpone_db_transaction()) {
+  if (bdev->need_postpone_db_transaction()) {
     txc->post_write = true;
     o->post_write = true;
     txc->post_wctxs.push_back({std::move(wctx), offset, length, o->oid, c});
