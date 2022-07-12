@@ -67,6 +67,7 @@ KernelDevice::KernelDevice(CephContext* cct, aio_callback_t cb, void *cbpriv, ai
   fd_directs.resize(WRITE_LIFE_MAX, -1);
   fd_buffereds.resize(WRITE_LIFE_MAX, -1);
   fd_ngs.resize(WRITE_LIFE_MAX, -1);
+  postpone_db_transaction = cct->_conf->bluestore_zns_postpone_db_transaction;
 
   bool use_ioring = cct->_conf.get_val<bool>("bdev_ioring");
   unsigned int iodepth = cct->_conf->bdev_aio_max_queue_depth;
@@ -127,14 +128,17 @@ int KernelDevice::open(const string& p)
   int r = 0, i = 0;
   dout(1) << __func__ << " path " << path << dendl;
 
-  if (is_smr() && cct->_conf->contains("bluestore_zns_ng_path")) {
-    io_to_ng = true;
-    ng_path = cct->_conf->bluestore_zns_ng_path;
-    dout(1) << __func__ << " io to ng device" << ng_path << dendl;
-    if (cct->_conf->bluestore_zns_postpone_db_transaction) {
-      use_append = cct->_conf->bluestore_zns_use_append;
-      if (use_append) {
-        alloc_submit_sync = cct->_conf->bluestore_zns_alloc_submit_sync;
+  if (is_smr()) {
+    alloc_submit_sync = true;
+    if (cct->_conf->contains("bluestore_zns_ng_path")) {
+      io_to_ng = true;
+      ng_path = cct->_conf->bluestore_zns_ng_path;
+      dout(1) << __func__ << " io to ng device" << ng_path << dendl;
+      if (cct->_conf->bluestore_zns_postpone_db_transaction) {
+        use_append = cct->_conf->bluestore_zns_use_append;
+        if (use_append) {
+          alloc_submit_sync = cct->_conf->bluestore_zns_alloc_submit_sync;
+        }
       }
     }
   }
@@ -844,6 +848,21 @@ void KernelDevice::aio_submit(IOContext *ioc)
   // move these aside, and get our end iterator position now, as the
   // aios might complete as soon as they are submitted and queue more
   // wal aio's.
+  if (postpone_db_transaction) {
+    if (ioc->pending_aios.front().iocb.aio_lio_opcode == IO_CMD_PWRITEV) {
+      for (auto pending_aio = ioc->pending_aios.begin();
+          pending_aio != ioc->pending_aios.end();
+          ++pending_aio) {
+
+        IOContext::post_addr_t post_addr = {
+          .offset = pending_aio->offset,
+          .length = pending_aio->length };
+        ioc->post_addrs.push_back(post_addr);
+        pending_aio->post_offset_ptr = &(ioc->post_addrs.back().offset);
+      }
+    }
+  }
+
   list<aio_t>::iterator e = ioc->running_aios.begin();
   ioc->running_aios.splice(e, ioc->pending_aios);
 

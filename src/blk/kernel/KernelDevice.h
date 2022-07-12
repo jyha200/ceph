@@ -32,12 +32,13 @@ protected:
   std::string path;
   std::string ng_path;
   std::unique_ptr<io_queue_t> io_queue;
+  bool postpone_db_transaction = false;
 private:
   std::vector<int> fd_directs, fd_buffereds, fd_ngs;
   bool enable_wrt = true;
   bool aio, dio;
   bool io_to_ng = false;
-  bool alloc_submit_sync = true;
+  bool alloc_submit_sync = false;
   bool use_append = false;
 
   int vdo_fd = -1;      ///< fd for vdo sysfs directory
@@ -122,6 +123,7 @@ public:
 
   void aio_submit(IOContext *ioc) override;
   void discard_drain() override;
+  bool need_postpone_db_transaction() const override { return postpone_db_transaction; }
 
   int collect_metadata(const std::string& prefix, std::map<std::string,std::string> *pm) const override;
   int get_devname(std::string *s) const override {

@@ -84,7 +84,6 @@ HMSMRDevice::HMSMRDevice(CephContext* cct,
     void *d_cbpriv)
   : KernelDevice(cct, hmsmr_cb, new hmsmr_cbpriv(cb, cbpriv, this), d_cb, d_cbpriv)
 {
-  postpone_db_transaction = cct->_conf->bluestore_zns_postpone_db_transaction;
   if (postpone_db_transaction) {
     if (cct->_conf->contains("bluestore_zns_ng_path")) {
       support_append_ = cct->_conf->bluestore_zns_use_append;

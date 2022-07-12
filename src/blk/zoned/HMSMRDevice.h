@@ -44,7 +44,6 @@ class HMSMRDevice final : public KernelDevice {
 
   zone_pending_io_t* pending_ios;
   bool support_append_ = false;
-  bool postpone_db_transaction = false;
   bool support_multi_qd_submission_ = false;
 
 public:
@@ -72,7 +71,6 @@ public:
 	void do_aio_submit(uint64_t zone, bool completed);
 
 	bool supported_bdev_label() override { return false; }
-  bool need_postpone_db_transaction() const override { return postpone_db_transaction; }
   bool support_append() const override { return support_append_; }
   bool support_multi_qd_submission() const override { return support_multi_qd_submission_; }
 };
