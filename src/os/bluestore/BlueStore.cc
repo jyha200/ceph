@@ -4595,6 +4595,7 @@ BlueStore::BlueStore(CephContext *cct,
   _init_logger();
   cct->_conf.add_observer(this);
   set_cache_shards(1);
+  prevent_db_rw_mingling = cct->_conf->bluestore_prevent_db_rw_mingling;
 }
 
 BlueStore::~BlueStore()
@@ -12085,26 +12086,41 @@ void BlueStore::_txc_update_store_statfs(TransContext *txc)
   logger->inc(l_bluestore_compressed_original, txc->statfs_delta.compressed_original());
 
   bufferlist bl;
+  if (prevent_db_rw_mingling == false) {
+    txc->statfs_delta.encode(bl);
+  }
   if (per_pool_stat_collection) {
     string key;
     get_pool_stat_key(txc->osd_pool_id, &key);
+
     {
       std::lock_guard l(vstatfs_lock);
       auto& stats = osd_pools[txc->osd_pool_id];
       stats += txc->statfs_delta;
 
       vstatfs += txc->statfs_delta; //non-persistent in this mode
-      stats.encode(bl);
+      if (prevent_db_rw_mingling) {
+        stats.encode(bl);
+      }
     }
-    txc->t->set(PREFIX_STAT, key, bl);
-
+    if (prevent_db_rw_mingling) {
+      txc->t->set(PREFIX_STAT, key, bl);
+    } else {
+      txc->t->merge(PREFIX_STAT, key, bl);
+    }
   } else {
     {
       std::lock_guard l(vstatfs_lock);
       vstatfs += txc->statfs_delta;
-      vstatfs.encode(bl);
+      if (prevent_db_rw_mingling) {
+        vstatfs.encode(bl);
+      }
     }
-    txc->t->set(PREFIX_STAT, BLUESTORE_GLOBAL_STATFS_KEY, bl);
+    if (prevent_db_rw_mingling) {
+      txc->t->set(PREFIX_STAT, BLUESTORE_GLOBAL_STATFS_KEY, bl);
+    } else {
+      txc->t->merge(PREFIX_STAT, BLUESTORE_GLOBAL_STATFS_KEY, bl);
+    }
   } 
   txc->statfs_delta.reset();
 }
@@ -12795,6 +12811,8 @@ void BlueStore::_osr_drain_all()
 void BlueStore::_kv_start()
 {
   dout(10) << __func__ << dendl;
+  sync_thread_count = cct->_conf->bluestore_sync_thread_count;
+  finalize_thread_count = cct->_conf->bluestore_finalize_thread_count;
 
   finisher.start();
   kv_sync_thread.create("bstore_kv_sync");
@@ -12837,23 +12855,17 @@ void BlueStore::_kv_stop()
   dout(10) << __func__ << " stopped" << dendl;
 }
 
-static const int TH_COUNT = 16;
-struct Shar {
-  std::deque<BlueStore::TransContext*> q;
-  std::mutex lock;
-  bool stop = false;
-  std::condition_variable cond_var;
-} shared[TH_COUNT];
-
-std::thread ths[TH_COUNT];
 
 void BlueStore::_kv_sync_thread()
 {
-  if (TH_COUNT > 1) {
+  Shar shared[sync_thread_count];
+  std::thread ths[sync_thread_count];
+
+  if (sync_thread_count > 1) {
     static bool first = true;
     if (first) {
       first = false;
-      for (int i = 0 ; i < TH_COUNT ; i++) {
+      for (int i = 0 ; i < sync_thread_count ; i++) {
         ths[i] = std::thread(
             [this] (int i, Shar* shar) {
             std::unique_lock l(shar->lock);
@@ -12998,7 +13010,7 @@ void BlueStore::_kv_sync_thread()
 	t->set(PREFIX_SUPER, "blobid_max", bl);
 	dout(10) << __func__ << " new_blobid_max " << new_blobid_max << dendl;
       }
-    if (TH_COUNT > 1) {
+    if (sync_thread_count > 1) {
       for (auto& shar : shared) {
         shar.lock.lock();
       }
@@ -13008,9 +13020,9 @@ void BlueStore::_kv_sync_thread()
       throttle.log_state_latency(*txc, logger, l_bluestore_state_kv_queued_lat);
       if (txc->get_state() == TransContext::STATE_KV_QUEUED) {
         ++kv_submitted;
-        if (TH_COUNT > 1) {
+        if (sync_thread_count > 1) {
           shared[i].q.push_back(txc);
-          i = (i + 1) % TH_COUNT;
+          i = (i + 1) % sync_thread_count;
         } else {
           _txc_apply_kv(txc, false);
         }
@@ -13023,7 +13035,7 @@ void BlueStore::_kv_sync_thread()
       }
     }
 
-    if (TH_COUNT > 1) {
+    if (sync_thread_count > 1) {
       for (auto& shar : shared) {
         shar.cond_var.notify_all();
         shar.lock.unlock();
@@ -13156,8 +13168,8 @@ void BlueStore::_kv_sync_thread()
       deferred_stable_queue.swap(deferred_done);
     }
   }
-  if (TH_COUNT > 1) {
-    for (int i = 0 ; i < TH_COUNT ; i++) {
+  if (sync_thread_count > 1) {
+    for (int i = 0 ; i < sync_thread_count ; i++) {
       {
         std::unique_lock l(shared[i].lock);
         shared[i].stop = true;
@@ -13170,11 +13182,6 @@ void BlueStore::_kv_sync_thread()
   kv_sync_started = false;
 }
 
-
-static const int FI_TH_COUNT = 1;
-Shar fi_shared[FI_TH_COUNT];
-std::thread fi_ths[FI_TH_COUNT];
-
 void BlueStore::_kv_finalize_thread()
 {
   deque<TransContext*> kv_committed;
@@ -13185,11 +13192,14 @@ void BlueStore::_kv_finalize_thread()
   kv_finalize_started = true;
   kv_finalize_cond.notify_all();
 
-  if (FI_TH_COUNT > 1) {
+  Shar fi_shared[finalize_thread_count];
+  std::thread fi_ths[finalize_thread_count];
+
+  if (finalize_thread_count > 1) {
     static bool first = true;
     if (first) {
       first = false;
-      for (int i = 0 ; i < FI_TH_COUNT ; i++) {
+      for (int i = 0 ; i < finalize_thread_count ; i++) {
         fi_ths[i] = std::thread(
             [this] (int i, Shar* shar) {
             std::unique_lock l(shar->lock);
@@ -13228,7 +13238,7 @@ void BlueStore::_kv_finalize_thread()
 
       auto start = mono_clock::now();
 
-      if (FI_TH_COUNT > 1) {
+      if (finalize_thread_count > 1) {
         for (auto& shar : fi_shared) {
           shar.lock.lock();
         }
@@ -13237,15 +13247,15 @@ void BlueStore::_kv_finalize_thread()
       while (!kv_committed.empty()) {
         TransContext *txc = kv_committed.front();
 
-        if (FI_TH_COUNT > 1) {
+        if (finalize_thread_count > 1) {
           fi_shared[k].q.push_back(txc);
-          k = (k + 1) % FI_TH_COUNT;
+          k = (k + 1) % finalize_thread_count;
         } else {
           _txc_state_proc(txc);
         }
         kv_committed.pop_front();
       }
-    if (FI_TH_COUNT > 1) {
+    if (finalize_thread_count > 1) {
       for (auto& shar : fi_shared) {
         shar.cond_var.notify_all();
         shar.lock.unlock();
@@ -13290,14 +13300,14 @@ void BlueStore::_kv_finalize_thread()
       l.lock();
     }
   }
-  if (FI_TH_COUNT > 1) {
-    for (int i = 0 ; i < FI_TH_COUNT ; i++) {
+  if (finalize_thread_count > 1) {
+    for (int i = 0 ; i < finalize_thread_count ; i++) {
       {
         std::unique_lock l(fi_shared[i].lock);
         fi_shared[i].stop = true;
         fi_shared[i].cond_var.notify_all();
       }
-      ths[i].join();
+      fi_ths[i].join();
     }
   }
   dout(10) << __func__ << " finish" << dendl;

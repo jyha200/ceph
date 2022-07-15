@@ -1564,6 +1564,17 @@ public:
     }
   };
 
+  struct Shar {
+    std::deque<BlueStore::TransContext*> q;
+    std::mutex lock;
+    bool stop = false;
+    std::condition_variable cond_var;
+  };
+
+  bool prevent_db_rw_mingling = false;
+  int32_t sync_thread_count = 0;
+  int32_t finalize_thread_count = 0;
+
   struct WriteContext {
     bool buffered = false;          ///< buffered write
     bool compress = false;          ///< compressed write
