@@ -41,6 +41,7 @@ struct bluefs_fnode_t {
   utime_t mtime;
   uint8_t __unused__; // was prefer_bdev
   mempool::bluefs::vector<bluefs_extent_t> extents;
+  uint64_t fragment_size = 0;
 
   // precalculated logical offsets for extents vector entries
   // allows fast lookup for extent index by the offset value via upper_bound()
@@ -84,7 +85,26 @@ struct bluefs_fnode_t {
     denc(v.mtime, p);
     denc(v.__unused__, p);
     denc(v.extents, p);
+    denc(v.fragment_size, p);
     DENC_FINISH(p);
+  }
+
+  uint64_t get_fragment_size() {
+    return fragment_size;
+  }
+
+  void remove_fragment() {
+    if (fragment_size > 0) {
+      extents_index.pop_back();
+      allocated -= extents.back().length;
+      extents.pop_back();
+      fragment_size = 0;
+    }
+  }
+
+  void append_fragment(const bluefs_extent_t& ext, size_t data_size) {
+    append_extent(ext);
+    fragment_size = data_size;
   }
 
   void replace_or_insert_extents(
@@ -202,6 +222,7 @@ struct bluefs_fnode_t {
   void clear_extents() {
     extents_index.clear();
     extents.clear();
+    fragment_size = 0;
     allocated = 0;
   }
 

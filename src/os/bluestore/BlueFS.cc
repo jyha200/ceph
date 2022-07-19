@@ -186,9 +186,6 @@ private:
 void BlueFS::append_try_flush(FileWriter *h, const char* buf, size_t len) {
   size_t max_size = 1ull << 30; // cap to 1GB
   bool need_preflush = false;
-  if (h->writer_type == WRITER_WAL) {
-    need_preflush = (len == 0xc);
-  }
 
   while (len > 0) {
     bool need_flush = true;
@@ -2985,13 +2982,15 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
         if (h->file->fnode.ino <= 1) {
           bdev[p->bdev]->aio_legacy_write(p->offset + x_off, t, ioc, buffered, h->write_hint);
         } else {
-          buffered = false;
+          if (h->writer_type == WRITER_WAL) {
+            buffered = false;
+          }
           bdev[p->bdev]->aio_legacy_write(p->offset + x_off, t, ioc, buffered, h->write_hint);
         }
       } else {
         bdev[p->bdev]->aio_write(p->offset + x_off, t, ioc, buffered, h->write_hint);
       }
-      if (zns_fs) {
+      if (zns_fs && buffered == false) {
         new_ioc.push_back(ioc);
         h->iocv_zns[p->bdev].push_back(ioc);
       }
@@ -3012,7 +3011,6 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
   if (zns_fs) {
     for(auto ioc : new_ioc) {
       if (ioc && ioc->has_pending_aios()) {
-        ioc->mark_aio_submit();
         dout(20) << __func__ << " submit " << ioc << dendl;
         bdev[ioc->id]->aio_submit(ioc);
       }
@@ -3021,7 +3019,6 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
     for (unsigned i = 0; i < MAX_BDEV; ++i) {
       if (bdev[i]) {
         if (h->iocv[i] && h->iocv[i]->has_pending_aios()) {
-          h->iocv[i]->mark_aio_submit();
           dout(20) << __func__ << " submit " << h->iocv[i] << dendl;
           bdev[i]->aio_submit(h->iocv[i]);
         }
@@ -3306,9 +3303,95 @@ uint64_t BlueFS::get_meta_zone_addr(uint64_t need) {
   return allocated;
 }
 
+
+int BlueFS::_allocate_for_zns(uint8_t id, uint64_t len,
+		      bluefs_fnode_t* node, uint64_t offset) {
+  dout(10) << __func__ << " len 0x" << std::hex << len << " alloc_unit 0x"
+    << alloc_size[id] << std::dec << " from " << (int)id << dendl;
+  ceph_assert(id < alloc.size());
+  ceph_assert(zns_fs);
+
+  int64_t need = len;
+  if (alloc[id]) {
+    if (node->ino < 2) {
+      uint64_t addr = 0;
+      if (node->ino == 1) {
+        addr = get_meta_addr(need);
+      } else {
+        addr = get_meta_zone_addr(need);
+      }
+      uint64_t used = _get_used(id);
+      if (max_bytes[id] < used) {
+        logger->set(max_bytes_pcounters[id], used);
+        max_bytes[id] = used;
+      }
+      if (is_shared_alloc(id)) {
+        shared_alloc->bluefs_used += need;
+      }
+
+      dout(10) << __func__ << " add log addr 0x" << std::hex << addr
+        << " size 0x" << need << dendl;
+      node->append_extent(bluefs_extent_t(id, addr, need));
+    } else {
+      auto fragment_size = node->get_fragment_size();
+      need += fragment_size;
+      auto aligned_need = need / alloc_size[id] * alloc_size[id];
+      auto fragment_need = need - aligned_need;
+      auto hint = BLUEFS_ZNS_FS;//writer_type == WRITER_WAL ? BLUEFS_ZNS_FS_WAL : BLUEFS_ZNS_FS_NORMAL;
+      auto hint2 = node->ino;
+      PExtentVector extents;
+      PExtentVector fragment_extent;
+      uint64_t alloc_len = 0;
+      dout(10) << __func__ << " need 0x" << std::hex << need << " frag_size 0x"<< fragment_size << " aligned_need 0x" << aligned_need << dendl;
+      if (aligned_need > 0) {
+        alloc_len = alloc[id]->allocate(aligned_need, hint2, hint, &extents);
+        ceph_assert(alloc_len == aligned_need);
+      }
+      ceph_assert(fragment_need < alloc_size[id]);
+      if (fragment_need > 0) {
+        hint = BLUEFS_ZNS_FS;
+        uint64_t fragment_alloc_len =
+          alloc[id]->allocate(alloc_size[id], 0, hint, &fragment_extent);
+        ceph_assert(fragment_alloc_len == alloc_size[id]);
+        alloc_len += fragment_alloc_len;
+      }
+
+      uint64_t used = _get_used(id);
+      if (max_bytes[id] < used) {
+        logger->set(max_bytes_pcounters[id], used);
+        max_bytes[id] = used;
+      }
+      if (is_shared_alloc(id)) {
+        shared_alloc->bluefs_used += alloc_len;
+      }
+      node->remove_fragment();
+      for (auto p : extents) {
+        dout(10) << __func__ << " add aligned " << p << dendl;
+        node->append_extent(bluefs_extent_t(id, p.offset, p.length));
+      }
+      if (fragment_need > 0) {
+        ceph_assert(fragment_extent.size() == 1);
+        dout(10) << __func__ << " add fragment " << fragment_extent[0] << dendl;
+        node->append_fragment(
+            bluefs_extent_t(
+              id,
+              fragment_extent[0].offset,
+              fragment_extent[0].length),
+            fragment_need);
+      }
+    }
+    return 0;
+  } else {
+    return _allocate_for_zns(id + 1, len, node, offset);
+  }
+}
+
 int BlueFS::_allocate(uint8_t id, uint64_t len,
 		      bluefs_fnode_t* node, uint64_t offset)
 {
+  if (zns_fs) {
+    return _allocate_for_zns(id, len, node, offset);
+  }
   dout(10) << __func__ << " len 0x" << std::hex << len << std::dec
            << " from " << (int)id << " off 0x" << std::hex << offset << dendl;
   ceph_assert(id < alloc.size());
@@ -3316,34 +3399,13 @@ int BlueFS::_allocate(uint8_t id, uint64_t len,
   PExtentVector extents;
   uint64_t hint = 0;
   int64_t need = len;
-  auto aligned_offset = (offset / alloc_size[id]) * alloc_size[id];
-  auto diff = offset - aligned_offset;
   if (alloc[id]) {
-    if (zns_fs) {
-      len += diff;
-    }
     need = round_up_to(len, alloc_size[id]);
     if (!node->extents.empty() && node->extents.back().bdev == id) {
       hint = node->extents.back().end();
     }
     extents.reserve(4);  // 4 should be (more than) enough for most allocations
-    if (zns_fs && (node->ino == 1 || node->ino == 0)) {
-      uint64_t addr;
-      if (node->ino == 1) {
-        addr = get_meta_addr(need);
-      } else {
-        //addr = get_meta_addr(need);
-        addr = get_meta_zone_addr(need);
-      }
-
-      extents.push_back(bluestore_pextent_t(addr, need));
-      alloc_len = need;
-    } else {
-      if (zns_fs) {
-        hint = BLUEFS_ZNS_FS;
-      }
-      alloc_len = alloc[id]->allocate(need, alloc_size[id], hint, &extents);
-    }
+    alloc_len = alloc[id]->allocate(need, alloc_size[id], hint, &extents);
   }
   if (alloc_len < 0 || alloc_len < need) {
     if (alloc[id]) {
@@ -3385,22 +3447,8 @@ int BlueFS::_allocate(uint8_t id, uint64_t len,
     }
   }
 
-  if (zns_fs) {
-    ceph_assert(offset < 0xFFFFFFFFFFFFFFFFUL);
-    if (node->allocated == aligned_offset) {
-      for (auto& p : extents) {
-        dout(10) << __func__ << " allocated " << node->allocated << " offset " << p.offset
-          << " length " << p.length << dendl;
-          node->append_extent(bluefs_extent_t(id, p.offset, p.length));
-      }
-    } else {
-        dout(10) << __func__ << " replace_or~ " << " allocated "<< node->allocated << " aligned_offset " << aligned_offset << dendl;
-      node->replace_or_insert_extents(id, aligned_offset, extents, pending_release);
-    }
-  } else {
-    for (auto& p : extents) {
-      node->append_extent(bluefs_extent_t(id, p.offset, p.length));
-    }
+  for (auto& p : extents) {
+    node->append_extent(bluefs_extent_t(id, p.offset, p.length));
   }
 
   return 0;

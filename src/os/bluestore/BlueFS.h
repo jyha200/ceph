@@ -403,6 +403,8 @@ private:
   const char* get_device_name(unsigned id);
   int _allocate(uint8_t bdev, uint64_t len,
 		bluefs_fnode_t* node, uint64_t offset = 0xFFFFFFFFFFFFFFFFUL);
+  int _allocate_for_zns(uint8_t bdev, uint64_t len,
+		bluefs_fnode_t* node, uint64_t offset = 0xFFFFFFFFFFFFFFFFUL);
   int _allocate_without_fallback(uint8_t id, uint64_t len,
 				 PExtentVector* extents);
 
