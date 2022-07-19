@@ -15063,11 +15063,13 @@ int BlueStore::_do_alloc_write(
   prealloc.reserve(2 * wctx->writes.size());;
   int64_t prealloc_left = 0;
   int64_t hint = 0;
+  int64_t hint2 = min_alloc_size;
   if (bdev->is_smr()) {
-    hint = o->get_hint();
+    hint = BLUEFS_ZNS_DATA;
+    hint2 = o->get_hint();
   }
   prealloc_left = alloc->allocate(
-    need, min_alloc_size, need,
+    need, hint2, need,
     hint, &prealloc);
   if (prealloc_left < 0 || prealloc_left < (int64_t)need) {
     dout(5) << __func__ << "::NCB::failed allocation of " << need << " bytes!! alloc=" << alloc << dendl;

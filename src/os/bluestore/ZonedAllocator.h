@@ -53,8 +53,11 @@ private:
   static const uint64_t interleaving_unit = 128 * 1024;
   std::vector<uint64_t> active_zones;
   uint64_t open_zone_for_fs = 0;
+  uint64_t open_zone_for_fs_total = 0;
+  uint64_t open_zone_for_fs_frag = 0;
   uint64_t open_zone_for_data = 128;
   uint64_t last_visited_idx_fs;
+  uint64_t last_visited_idx_fs_frag;
   uint64_t last_visited_idx_data[GROUP_COUNT];
 
   inline uint64_t get_offset(uint64_t zone_num) const {
@@ -63,7 +66,11 @@ private:
   void select_other_zone(uint64_t index);
   uint64_t get_group(int64_t hint);
   uint64_t get_target_idx_from_hint(int64_t hint);
+  uint64_t get_fs_target_idx_from_hint(int64_t hint);
+  uint64_t get_fs_frag_target_idx_from_hint(int64_t hint);
   void increase_target_idx(int64_t hint);
+  void increase_fs_target_idx(int64_t hint);
+  void increase_fs_frag_target_idx(int64_t hint);
 
 public:
   inline uint64_t get_write_pointer(uint64_t zone_num) const {

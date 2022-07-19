@@ -56,18 +56,21 @@ ZonedAllocator::ZonedAllocator(CephContext* cct,
     zone_to_assign_for_zns_fs = reserved_zone_for_fs;
     first_seq_zone_num += RESERVE_FOR_ZNS_FS;
     num_available_zones = num_zones - RESERVE_FOR_ZNS_FS;
-    open_zone_for_fs = cct->_conf->bluestore_zns_fs_zone;
-    ceph_assert(max_open_zone > open_zone_for_fs);
+    open_zone_for_fs_total = cct->_conf->bluestore_zns_fs_zone;
+    ceph_assert(cct->_conf->bluestore_zns_fs_zone > open_zone_for_fs_frag);
+    open_zone_for_fs = open_zone_for_fs_total - open_zone_for_fs_frag;
+    ceph_assert(max_open_zone > open_zone_for_fs_total);
   }
-  open_zone_for_data = max_open_zone - open_zone_for_fs;
+  open_zone_for_data = max_open_zone - open_zone_for_fs_total;
   for (uint64_t i = 0 ; i < max_open_zone ; i++) {
     active_zones[i] = i + first_seq_zone_num;
   }
   ceph_assert(open_zone_for_data >= GROUP_COUNT);
   group_size = open_zone_for_data / GROUP_COUNT;
-  last_visited_idx_fs = max_open_zone - 1;
+  last_visited_idx_fs = 0;
+  last_visited_idx_fs_frag = 0;
   for (unsigned i = 0 ; i < GROUP_COUNT ; i++) {
-    last_visited_idx_data[i] = group_size - 1;
+    last_visited_idx_data[i] = 0;
   }
 }
 
@@ -87,12 +90,36 @@ uint64_t ZonedAllocator::get_group(int64_t hint) {
 
 uint64_t ZonedAllocator::get_target_idx_from_hint(int64_t hint) {
   auto group = get_group(hint);
-  return ((last_visited_idx_data[group] + 1) % group_size) + group * group_size + open_zone_for_fs;
+  return (last_visited_idx_data[group] % group_size) + group * group_size + open_zone_for_fs_total;
+}
+
+uint64_t ZonedAllocator::get_fs_target_idx_from_hint(int64_t hint) {
+  return last_visited_idx_fs % open_zone_for_fs;
+}
+
+uint64_t ZonedAllocator::get_fs_frag_target_idx_from_hint(int64_t hint) {
+  if (open_zone_for_fs_frag == 0) {
+    return get_fs_target_idx_from_hint(hint);
+  } else {
+    return last_visited_idx_fs_frag % open_zone_for_fs_frag + open_zone_for_fs;
+  }
 }
 
 void ZonedAllocator::increase_target_idx(int64_t hint) {
   auto group = get_group(hint);
   last_visited_idx_data[group]++;
+}
+
+void ZonedAllocator::increase_fs_target_idx(int64_t hint) {
+  last_visited_idx_fs++;
+}
+
+void ZonedAllocator::increase_fs_frag_target_idx(int64_t hint) {
+  if (open_zone_for_fs_frag == 0) {
+    increase_fs_target_idx(hint);
+  } else {
+    last_visited_idx_fs_frag++;
+  }
 }
 
 int64_t ZonedAllocator::allocate(
@@ -103,6 +130,7 @@ int64_t ZonedAllocator::allocate(
   PExtentVector *extents)
 {
   std::lock_guard l(lock);
+  auto hint2 = alloc_unit;
 
   ceph_assert(want_size % block_size == 0);
 
@@ -111,19 +139,35 @@ int64_t ZonedAllocator::allocate(
   uint64_t remaining_size = want_size;
   while(remaining_size > 0) {
     uint64_t target_idx;
-    if (hint == BLUEFS_ZNS_FS) {
-      target_idx = (last_visited_idx_fs + 1) % open_zone_for_fs;
-    } else {
-      //target_idx = (last_visited_idx_data + 1) % open_zone_for_data + open_zone_for_fs;
-      target_idx = get_target_idx_from_hint(hint);
+    switch(hint) {
+      case BLUEFS_ZNS_FS:
+        target_idx = get_fs_target_idx_from_hint(hint2);
+        break;
+      case BLUEFS_ZNS_FS_FRAG:
+        target_idx = get_fs_frag_target_idx_from_hint(hint2);
+        break;
+      case BLUEFS_ZNS_DATA:
+        target_idx = get_target_idx_from_hint(hint2);
+        break;
+      default:
+        ceph_assert(false);
     }
+
     uint64_t zone_num = active_zones[target_idx];
     if (zone_num == cleaning_zone) {
       select_other_zone(target_idx);
-      if (hint == BLUEFS_ZNS_FS) {
-        last_visited_idx_fs++;
-      } else {
-        increase_target_idx(hint);
+      switch(hint) {
+        case BLUEFS_ZNS_FS:
+          increase_fs_target_idx(hint2);
+          break;
+        case BLUEFS_ZNS_FS_FRAG:
+          increase_fs_frag_target_idx(hint2);
+          break;
+        case BLUEFS_ZNS_DATA:
+          increase_target_idx(hint2);
+          break;
+        default:
+          ceph_assert(false);
       }
       continue;
     }
@@ -142,10 +186,19 @@ int64_t ZonedAllocator::allocate(
   ldout(cct, 10) << " allocated 0x"
 		 << std::hex << offset << " len 0x" << target_size << std::dec << dendl;
     remaining_size -= target_size;
-    if (hint == BLUEFS_ZNS_FS) {
-      last_visited_idx_fs++;
-    } else {
-      increase_target_idx(hint);
+
+    switch(hint) {
+      case BLUEFS_ZNS_FS:
+        increase_fs_target_idx(hint2);
+        break;
+      case BLUEFS_ZNS_FS_FRAG:
+        increase_fs_frag_target_idx(hint2);
+        break;
+      case BLUEFS_ZNS_DATA:
+        increase_target_idx(hint2);
+        break;
+      default:
+        ceph_assert(false);
     }
   }
   return want_size;

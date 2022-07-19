@@ -3337,7 +3337,7 @@ int BlueFS::_allocate_for_zns(uint8_t id, uint64_t len,
       need += fragment_size;
       auto aligned_need = need / alloc_size[id] * alloc_size[id];
       auto fragment_need = need - aligned_need;
-      auto hint = BLUEFS_ZNS_FS;//writer_type == WRITER_WAL ? BLUEFS_ZNS_FS_WAL : BLUEFS_ZNS_FS_NORMAL;
+      auto hint = BLUEFS_ZNS_FS;
       auto hint2 = node->ino;
       PExtentVector extents;
       PExtentVector fragment_extent;
@@ -3349,7 +3349,7 @@ int BlueFS::_allocate_for_zns(uint8_t id, uint64_t len,
       }
       ceph_assert(fragment_need < alloc_size[id]);
       if (fragment_need > 0) {
-        hint = BLUEFS_ZNS_FS;
+        hint = BLUEFS_ZNS_FS_FRAG;
         uint64_t fragment_alloc_len =
           alloc[id]->allocate(alloc_size[id], 0, hint, &fragment_extent);
         ceph_assert(fragment_alloc_len == alloc_size[id]);
