@@ -5370,6 +5370,9 @@ int BlueStore::_open_bdev(bool create)
   string p = path + "/block";
   bdev = BlockDevice::create(cct, p, aio_cb, static_cast<void*>(this), discard_cb, static_cast<void*>(this));
   int r = bdev->open(p);
+  if (bdev->is_smr()) {
+    zns_opt_zone_limit = cct->_conf->bluestore_zns_opt_zone_limit;
+  }
   if (r < 0)
     goto fail;
 
@@ -6876,8 +6879,10 @@ int BlueStore::mkfs()
   if (bdev->is_smr()) {
     freelist_type = "zoned";
     zone_size = bdev->get_zone_size();
-    ExtentMap::zone_size = zone_size;
-    ExtentMap::zns_mode = true;
+    if (cct->_conf->bluestore_zns_opt_zone_scan) {
+      ExtentMap::zone_size = zone_size;
+      ExtentMap::zns_mode = true;
+    }
 		if (cct->_conf->contains("bluestore_cns_path")) {
       // reserve 2 zones for blueof superblock, 1 zones for MBR
 			first_sequential_zone = 3;
@@ -11907,8 +11912,10 @@ int BlueStore::_open_super_meta()
     if (r >= 0) {
       auto p = bl.cbegin();
       decode(zone_size, p);
-      ExtentMap::zone_size = zone_size;
-      ExtentMap::zns_mode = true;
+      if (cct->_conf->bluestore_zns_opt_zone_scan) {
+        ExtentMap::zone_size = zone_size;
+        ExtentMap::zns_mode = true;
+      }
       dout(1) << __func__ << " zone_size 0x" << std::hex << zone_size << std::dec << dendl;
       ceph_assert(bdev->is_smr());
     } else {
@@ -15066,7 +15073,9 @@ int BlueStore::_do_alloc_write(
   int64_t hint2 = min_alloc_size;
   if (bdev->is_smr()) {
     hint = BLUEFS_ZNS_DATA;
-    hint2 = o->get_hint();
+    if (zns_opt_zone_limit) {
+      hint2 = o->get_hint();
+    }
   }
   prealloc_left = alloc->allocate(
     need, hint2, need,
@@ -15353,9 +15362,26 @@ void BlueStore::_wctx_finish(
     // we need to fault the entire extent range in here to determinte if we've dropped
     // all refs to a zone.
     o->extent_map.fault_range(db, 0, OBJECT_MAX_SIZE);
-
-    for (auto zone : zones_with_releases) {
-      if (o->extent_map.zone_map.find(zone) == o->extent_map.zone_map.end()) {
+    if (ExtentMap::zns_mode) {
+      for (auto zone : zones_with_releases) {
+        if (o->extent_map.zone_map.find(zone) == o->extent_map.zone_map.end()) {
+          auto p = o->onode.zone_offset_refs.find(zone);
+          if (p != o->onode.zone_offset_refs.end()) {
+            dout(20) << __func__ << " rm ref zone 0x" << std::hex << zone
+              << " offset 0x" << p->second << std::dec << dendl;
+            txc->note_release_zone_offset(o, zone, p->second);
+          }
+        }
+      }
+    } else {
+      for (auto& b : o->extent_map.extent_map) {
+        for (auto& e : b.blob->get_blob().get_extents()) {
+          if (e.is_valid()) {
+            zones_with_releases.erase(e.offset / zone_size);
+          }
+        }
+      }
+      for (auto zone : zones_with_releases) {
         auto p = o->onode.zone_offset_refs.find(zone);
         if (p != o->onode.zone_offset_refs.end()) {
           dout(20) << __func__ << " rm ref zone 0x" << std::hex << zone

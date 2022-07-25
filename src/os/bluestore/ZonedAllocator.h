@@ -33,8 +33,8 @@ public:
   static const uint64_t RESERVE_FOR_ZNS_FS = 8192;
 private:
   uint64_t zone_to_assign_for_zns_fs = 0;
-  static const uint64_t GROUP_COUNT = 16;
   uint64_t group_size = 0;
+  uint64_t group_count = 0;
 
   uint64_t size;
   uint64_t conventional_size, sequential_size;
@@ -58,7 +58,7 @@ private:
   uint64_t open_zone_for_data = 128;
   uint64_t last_visited_idx_fs;
   uint64_t last_visited_idx_fs_frag;
-  uint64_t last_visited_idx_data[GROUP_COUNT];
+  std::vector<uint64_t> last_visited_idx_data;
 
   inline uint64_t get_offset(uint64_t zone_num) const {
     return zone_num * zone_size + get_write_pointer(zone_num);

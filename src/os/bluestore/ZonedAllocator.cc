@@ -65,11 +65,13 @@ ZonedAllocator::ZonedAllocator(CephContext* cct,
   for (uint64_t i = 0 ; i < max_open_zone ; i++) {
     active_zones[i] = i + first_seq_zone_num;
   }
-  ceph_assert(open_zone_for_data >= GROUP_COUNT);
-  group_size = open_zone_for_data / GROUP_COUNT;
+  group_count = cct->_conf->bluestore_zns_group_count;
+  ceph_assert(open_zone_for_data >= group_count);
+  group_size = open_zone_for_data / group_count;
   last_visited_idx_fs = 0;
   last_visited_idx_fs_frag = 0;
-  for (unsigned i = 0 ; i < GROUP_COUNT ; i++) {
+  last_visited_idx_data.resize(group_count);
+  for (unsigned i = 0 ; i < group_count ; i++) {
     last_visited_idx_data[i] = 0;
   }
 }
@@ -85,7 +87,7 @@ void ZonedAllocator::select_other_zone(uint64_t index) {
 }
 
 uint64_t ZonedAllocator::get_group(int64_t hint) {
-  return hint % GROUP_COUNT;
+  return hint % group_count;
 }
 
 uint64_t ZonedAllocator::get_target_idx_from_hint(int64_t hint) {

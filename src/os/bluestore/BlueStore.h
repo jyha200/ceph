@@ -1563,6 +1563,7 @@ public:
       }
     }
   };
+  bool zns_opt_zone_limit = false;
 
   struct WriteContext {
     bool buffered = false;          ///< buffered write
