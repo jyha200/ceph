@@ -103,7 +103,9 @@ struct bluefs_fnode_t {
   }
 
   void append_fragment(const bluefs_extent_t& ext, size_t data_size) {
-    append_extent(ext);
+    extents_index.emplace_back(allocated);
+    extents.push_back(ext);
+    allocated += ext.length;
     fragment_size = data_size;
   }
 
