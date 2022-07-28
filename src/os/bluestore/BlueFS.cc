@@ -2978,13 +2978,11 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
         ioc =  h->iocv[p->bdev];
       }
       if (zns_fs) {
+        buffered = false;
         //dout(1) << __func__ << " offset " << std::hex<< offset + bloff << dendl;
         if (h->file->fnode.ino <= 1) {
           bdev[p->bdev]->aio_legacy_write(p->offset + x_off, t, ioc, buffered, h->write_hint);
         } else {
-          if (h->writer_type == WRITER_WAL) {
-            buffered = false;
-          }
           bdev[p->bdev]->aio_legacy_write(p->offset + x_off, t, ioc, buffered, h->write_hint);
         }
       } else {
