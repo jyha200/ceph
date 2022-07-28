@@ -63,7 +63,7 @@ void IOContext::aio_wait()
 {
   std::unique_lock l(lock);
   // see _aio_thread for waker logic
-  while (num_running.load() > 0) {
+  while (num_pending.load() > 0 || num_running.load() > 0) {
     dout(10) << __func__ << " " << this
 	     << " waiting for " << num_running.load() << " aios to complete"
 	     << dendl;

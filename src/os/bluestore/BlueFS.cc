@@ -3033,6 +3033,7 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
 void BlueFS::_claim_completed_aios(FileWriter *h, list<aio_t> *ls)
 {
   if (zns_fs) {
+#if 0
     for (auto& p : h->iocv_zns) {
       for (auto ioc : p) {
         if (ioc) {
@@ -3040,6 +3041,7 @@ void BlueFS::_claim_completed_aios(FileWriter *h, list<aio_t> *ls)
         }
       }
     }
+#endif
   } else {
     for (auto p : h->iocv) {
       if (p) {
@@ -3062,13 +3064,13 @@ void BlueFS::wait_for_aio(FileWriter *h)
 
   if (zns_fs) {
     for (auto& p : h->iocv_zns) {
-      for (auto ioc : p) {
-        if (ioc) {
+      if (p.empty() == false) {
+        for (auto ioc : p) {
           ioc->aio_wait();
           delete ioc;
         }
+        p.clear();
       }
-      p.clear();
     }
   }
   else {

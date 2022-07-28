@@ -64,20 +64,21 @@ static void hmsmr_cb(void* priv, void* priv2)
     }
   }
 
-  if (ioc->num_pending == 0) {
-    if (ioc->priv != nullptr) {
+  if (ioc->priv != nullptr) {
+    if (ioc->num_pending == 0) {
       if (ioc->num_running == 0) {
         bdev->print(ioc);
         casted_priv->cb(casted_priv->cbpriv, ioc->priv);
       }
-    } else {
-      ioc->try_aio_wake();
     }
+  } else {
+    bdev->print(ioc);
+    ioc->try_aio_wake();
   }
 }
 
 void HMSMRDevice::print(IOContext* ioc) {
-  dout(10) << __func__ << " " << ioc->num_running << " " << ioc->num_pending << dendl;
+  dout(10) << __func__ << " ioc " << ioc << " " << ioc->num_running << " " << ioc->num_pending << dendl;
 }
 
 HMSMRDevice::HMSMRDevice(CephContext* cct,
