@@ -59,14 +59,6 @@ std::ostream& operator<<(std::ostream& os, const blk_access_mode_t buffered)
   return os;
 }
 
-void IOContext::aio_wait_with_priv() {
-  ceph_assert(priv != nullptr);
-  std::unique_lock l(lock);
-  while(done == false) {
-    cond.wait(l);
-  }
-}
-
 void IOContext::aio_wait()
 {
   std::unique_lock l(lock);

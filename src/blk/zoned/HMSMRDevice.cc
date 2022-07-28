@@ -69,7 +69,6 @@ static void hmsmr_cb(void* priv, void* priv2)
       if (ioc->num_running == 0) {
         bdev->print(ioc);
         casted_priv->cb(casted_priv->cbpriv, ioc->priv);
-        ioc->aio_wake();
       }
     } else {
       ioc->try_aio_wake();

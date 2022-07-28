@@ -2838,8 +2838,6 @@ IOContext* BlueFS::create_ioc(FileWriter* h, int bdev_id)
 {
   auto ioc = new IOContext(cct, NULL);
   if (zns_fs) {
-    ioc->priv = ioc;
-    ioc->fnode = &h->file->fnode;
     ioc->id = bdev_id;
   }
   return ioc;
@@ -3066,7 +3064,7 @@ void BlueFS::wait_for_aio(FileWriter *h)
     for (auto& p : h->iocv_zns) {
       for (auto ioc : p) {
         if (ioc) {
-          ioc->aio_wait_with_priv();
+          ioc->aio_wait();
           delete ioc;
         }
       }
@@ -3621,7 +3619,7 @@ void BlueFS::_close_writer(FileWriter *h)
       if (zns_fs) {
         for (auto& ioc : h->iocv_zns[i]) {
           if (ioc) {
-            ioc->aio_wait_with_priv();
+            ioc->aio_wait();
             delete ioc;
           }
         }
