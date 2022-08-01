@@ -59,7 +59,7 @@ execute_remote_cmd() {
 
 sudo pkill -9 ceph
 sudo mkdir -p /etc/ceph
-sudo cp ${CUR_DIR}/ceph_zns_fs$1.conf /etc/ceph/ceph.conf
+sudo cp ${CUR_DIR}/ceph_zns_fs.conf /etc/ceph/ceph.conf
 
 bringup_mon
 bringup_mgr
