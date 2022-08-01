@@ -40,13 +40,9 @@ bringup_osd() {
   DEV=$1
   sudo umount /dev/nvme2n1
   sudo rm -r /var/lib/ceph/osd/ceph-$ID
-#  sudo nvme format -f -s1 /dev/nvme2n1
-  sudo dd if=/dev/zero of=/dev/sdc bs=1M count=1
 	sudo zbd reset $DEV
-#  sudo mkfs.xfs -f /dev/nvme2n1
   mkdir /var/lib/ceph/osd/ceph-$ID
   sudo chown -R ceph:ceph /var/lib/ceph/osd/ceph-$ID
-#  sudo mount /dev/nvme2n1 /var/lib/ceph/osd/ceph-$ID
   ln -s $DEV /var/lib/ceph/osd/ceph-$ID/block
   sudo $BIN_DIR/ceph-authtool --create-keyring /var/lib/ceph/osd/ceph-$ID/keyring --name osd.$ID --add-key $OSD_SECRET
   sudo $BIN_DIR/ceph-osd -i $ID --mkfs --osd-uuid $UUID --debug-osd 1
@@ -63,8 +59,11 @@ execute_remote_cmd() {
 
 sudo pkill -9 ceph
 sudo mkdir -p /etc/ceph
-sudo cp ${CUR_DIR}/ceph_zns_$1.conf /etc/ceph/ceph.conf
+sudo cp ${CUR_DIR}/ceph_zns_fs_param.conf /etc/ceph/ceph.conf
+sudo echo "bluestore zns fs zone = $1" >> /etc/ceph/ceph.conf
+sudo echo "bluestore_zns_group_count = $2" >> /etc/ceph/ceph.conf
 
 bringup_mon
 bringup_mgr
 bringup_osd /dev/nvme0n1
+
