@@ -40,7 +40,8 @@ bringup_osd() {
   DEV=$1
   sudo umount /var/lib/ceph/osd/ceph-$ID
   sudo rm -r /var/lib/ceph/osd/ceph-$ID
-  sudo nvme format -f -s1 $DEV
+#  sudo nvme format -f -s1 $DEV
+  sudo dd if=/dev/zero of=$DEV bs=1M count=1
   mkdir /var/lib/ceph/osd/ceph-$ID
   sudo chown -R ceph:ceph /var/lib/ceph/osd/ceph-$ID
   ln -s $DEV /var/lib/ceph/osd/ceph-$ID/block
@@ -63,4 +64,4 @@ sudo cp ${CUR_DIR}/ceph_cns.conf /etc/ceph/ceph.conf
 
 bringup_mon
 bringup_mgr
-bringup_osd /dev/nvme1n1
+bringup_osd /dev/sdc
