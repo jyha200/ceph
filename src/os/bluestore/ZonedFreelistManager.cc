@@ -39,7 +39,11 @@ void ZonedFreelistManager::write_zone_state_delta_to_db(
   _key_encode_u64(zone_num, &key);
   bufferlist bl;
   zone_state.encode(bl);
-  txn->merge(info_prefix, key, bl);
+  if (remove_rocksdb_merge) {
+    txn->set(info_prefix, key, bl);
+  } else {
+    txn->merge(info_prefix, key, bl);
+  }
 }
 
 void ZonedFreelistManager::write_zone_state_reset_to_db(
@@ -97,6 +101,7 @@ ZonedFreelistManager::ZonedFreelistManager(
     info_prefix(info_prefix),
     enumerate_zone_num(~0UL)
 {
+  remove_rocksdb_merge = cct->_conf->bluestore_remove_rocksdb_merge;
 }
 
 int ZonedFreelistManager::create(

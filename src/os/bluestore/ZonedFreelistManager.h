@@ -35,6 +35,7 @@ class ZonedFreelistManager : public FreelistManager {
 
   KeyValueDB::Iterator enumerate_p;
   uint64_t enumerate_zone_num;
+  bool remove_rocksdb_merge = false;
 
   void write_zone_state_delta_to_db(uint64_t zone_num,
 				    const zone_state_t &zone_state,
