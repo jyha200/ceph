@@ -30,7 +30,7 @@ class ZonedAllocator : public Allocator {
   // atomic_alloc_and_submit_lock will be removed.
   ceph::mutex lock = ceph::make_mutex("ZonedAllocator::lock");
 public:
-  static const uint64_t RESERVE_FOR_ZNS_FS = 8192;
+  uint64_t reserve_for_zns_fs = 0;
 private:
   uint64_t zone_to_assign_for_zns_fs = 0;
   uint64_t group_size = 0;
@@ -41,13 +41,16 @@ private:
   std::atomic<int64_t> num_sequential_free;  ///< total bytes in freelist
   uint64_t block_size;
   uint64_t zone_size;
+  uint64_t zone_cap = 0;
   uint64_t first_seq_zone_num;
   uint64_t starting_zone_num;
   uint64_t num_zones;
   uint64_t reserved_zone_for_fs;
   uint64_t num_available_zones;
+  bool per_zone_lock_enabled = false;
   std::atomic<uint32_t> cleaning_zone = -1;
   std::vector<zone_state_t> zone_states;
+  std::vector<std::mutex*> per_zone_locks;
 
   uint64_t max_open_zone = 256;
   static const uint64_t interleaving_unit = 128 * 1024;
@@ -78,7 +81,7 @@ public:
   }
 private:
   inline uint64_t get_remaining_space(uint64_t zone_num) const {
-    return zone_size - get_write_pointer(zone_num);
+    return zone_cap - get_write_pointer(zone_num);
   }
 
   inline void increment_write_pointer(uint64_t zone_num, uint64_t want_size) {
@@ -115,6 +118,9 @@ public:
   int64_t allocate(
     uint64_t want_size, uint64_t alloc_unit, uint64_t max_alloc_size,
     int64_t hint, PExtentVector *extents) override;
+  int64_t locked_allocate(
+    uint64_t want_size, uint64_t alloc_unit, uint64_t max_alloc_size,
+    int64_t hint, PExtentVector *extents, LockVector* lockv = nullptr) override;
 
   void release(const interval_set<uint64_t>& release_set) override;
 

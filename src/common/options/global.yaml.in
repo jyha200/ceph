@@ -4680,6 +4680,24 @@ options:
   - hybrid
   - zoned
   with_legacy: true
+- name: bluestore_zns_fs_reserve
+  type: size
+  level: advanced
+  desc: latency profile
+  default: 8192
+  with_legacy: true
+- name: bluestore_zns_zone_cap
+  type: size
+  level: advanced
+  desc: latency profile
+  default: 0
+  with_legacy: true
+- name: bluestore_zns_per_zone_lock
+  type: bool
+  level: advanced
+  desc: latency profile
+  default: false
+  with_legacy: true
 - name: bluestore_zns_opt_zone_scan
   type: bool
   level: advanced

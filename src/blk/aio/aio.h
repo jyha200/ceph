@@ -99,7 +99,7 @@ struct io_queue_t {
 
   virtual ~io_queue_t() {};
 
-  virtual int init(std::vector<int> &fds, bool use_append) = 0;
+  virtual int init(std::vector<int> &fds, bool use_append, int nsid = -1) = 0;
   virtual void shutdown() = 0;
   virtual int submit_batch(aio_iter begin, aio_iter end, uint16_t aios_size,
 			   void *priv, int *retries) = 0;
@@ -122,7 +122,7 @@ struct aio_queue_t final : public io_queue_t {
     ceph_assert(ctx == 0);
   }
 
-  int init(std::vector<int> &fds, bool use_append) final {
+  int init(std::vector<int> &fds, bool use_append, int nsid) final {
     (void)fds;
     ceph_assert(ctx == 0);
 #if defined(HAVE_LIBAIO)

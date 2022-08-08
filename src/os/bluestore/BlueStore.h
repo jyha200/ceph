@@ -51,6 +51,7 @@
 #include "bluestore_types.h"
 #include "BlueFS.h"
 #include "common/EventTrace.h"
+#include "Allocator.h"
 
 #ifdef WITH_BLKIN
 #include "common/zipkin_trace.h"
@@ -1564,6 +1565,7 @@ public:
     }
   };
   bool zns_opt_zone_limit = false;
+  bool do_locked_alloc = false;
 
   struct WriteContext {
     bool buffered = false;          ///< buffered write
@@ -1778,6 +1780,8 @@ public:
     std::atomic<bool> finalized = false;
     bool post_write = false;
     CollectionRef coll;
+
+    LockVector alloc_locks;
 
     explicit TransContext(CephContext* cct, Collection *c, OpSequencer *o,
 			  std::list<Context*> *on_commits)

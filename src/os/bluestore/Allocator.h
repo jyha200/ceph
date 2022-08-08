@@ -21,6 +21,8 @@ static const int64_t BLUEFS_ZNS_FS = 1;
 static const int64_t BLUEFS_ZNS_FS_FRAG = 2;
 static const int64_t BLUEFS_ZNS_DATA = 3;
 
+using LockVector = std::set<std::mutex*>;
+
 class Allocator {
 public:
   Allocator(std::string_view name,
@@ -45,6 +47,13 @@ public:
   virtual int64_t allocate(uint64_t want_size, uint64_t block_size,
 			   uint64_t max_alloc_size, int64_t hint,
 			   PExtentVector *extents) = 0;
+  virtual int64_t locked_allocate(uint64_t want_size, uint64_t block_size,
+			   uint64_t max_alloc_size, int64_t hint,
+			   PExtentVector *extents, LockVector* lockv = nullptr) {
+    ceph_assert(false);
+    return 0;
+  }
+
 
   int64_t allocate(uint64_t want_size, uint64_t block_size,
 		   int64_t hint, PExtentVector *extents) {

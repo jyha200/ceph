@@ -30,6 +30,7 @@ struct ioring_data {
   std::map<int, int> fixed_fds_map;
   bool use_ng = false;
   bool use_append = false;
+  int nsid = -1;
   CephContext* cct;
 };
 
@@ -103,6 +104,7 @@ static int ioring_get_cqe(struct ioring_data *d, unsigned int max,
           post_process_append(io, uring_priv);
         }
       }
+      ceph_assert(cqe->res == 0);
       cqe->res = io->length;
       if (uring_priv->tmp_buf != nullptr) {
         free(uring_priv->tmp_buf);
@@ -166,28 +168,12 @@ static void create_io_command(
   nvme_io_command_t::opcode opcode,
   uint64_t offset,
   uint64_t length,
-  void* buf)
-{
-  io_cmd->common.opcode = static_cast<uint8_t>(opcode);
-  // TODO need to set real nsid
-  io_cmd->common.nsid = 1;
-  io_cmd->common.addr = reinterpret_cast<uint64_t>(buf);
-  io_cmd->common.data_len = length;
-  io_cmd->rw.slba = offset / BLK_SIZE;
-  io_cmd->rw.nlb = length / BLK_SIZE - 1;
-}
-
-static void create_io_command2(
-  nvme_io_command_t *io_cmd,
-  nvme_io_command_t::opcode opcode,
-  uint64_t offset,
-  uint64_t length,
   boost::container::small_vector<iovec,4>& iov,
+  int nsid,
   uring_priv_t* uring_priv)
 {
   io_cmd->common.opcode = static_cast<uint8_t>(opcode);
-  // TODO need to set real nsid
-  io_cmd->common.nsid = 1;
+  io_cmd->common.nsid = nsid;
   void* buf = iov[0].iov_base;
   if (iov.size() > 1) {
     uint8_t* tmp_buf = static_cast<uint8_t*>(aligned_alloc(BLK_SIZE, length));
@@ -210,16 +196,17 @@ static void create_read_command(
   io_uring_sqe *sqe,
   int fd,
   aio_t *io,
+  int nsid,
   uring_priv_t *uring_priv)
 {
-  // No vector support for read
-  ceph_assert(io->iov.size() == 1);
   create_io_command(
     &uring_priv->io_cmd,
     nvme_io_command_t::opcode::READ,
     io->offset,
     io->length,
-    io->iov[0].iov_base);
+    io->iov,
+    nsid,
+    uring_priv);
 
   create_passthrough_command(sqe, fd, uring_priv);
 }
@@ -228,14 +215,16 @@ static void create_write_command(
   io_uring_sqe *sqe,
   int fd,
   aio_t *io,
+  int nsid,
   uring_priv_t *uring_priv)
 {
-  create_io_command2(
+  create_io_command(
     &uring_priv->io_cmd,
     nvme_io_command_t::opcode::WRITE,
     io->offset,
     io->length,
     io->iov,
+    nsid,
     uring_priv);
 
   create_passthrough_command(sqe, fd, uring_priv);
@@ -245,14 +234,16 @@ static void create_append_command(
   io_uring_sqe *sqe,
   int fd,
   aio_t *io,
+  int nsid,
   uring_priv_t *uring_priv)
 {
-  create_io_command2(
+  create_io_command(
     &uring_priv->io_cmd,
     nvme_io_command_t::opcode::APPEND,
     io->offset,
     io->length,
     io->iov,
+    nsid,
     uring_priv);
 
   create_passthrough_command(sqe, fd, uring_priv);
@@ -270,17 +261,18 @@ static void init_sqe(struct ioring_data *d, struct io_uring_sqe *sqe,
     uring_priv_t* uring_priv = new uring_priv_t;
     uring_priv->aio = io;
     priv = uring_priv;
+    auto nsid = d->nsid;
     if (io->iocb.aio_lio_opcode == IO_CMD_PWRITEV) {
       ldout(d->cct, 20) << __func__ << " offset " << io->offset << " len " << io->length <<dendl;
       if (d->use_append) {
-        create_append_command(sqe, fixed_fd, io, uring_priv);
+        create_append_command(sqe, fixed_fd, io, nsid, uring_priv);
       } else {
-        create_write_command(sqe, fixed_fd, io, uring_priv);
+        create_write_command(sqe, fixed_fd, io, nsid, uring_priv);
       }
     } else if (io->iocb.aio_lio_opcode == IO_CMD_PREADV) {
-      create_read_command(sqe, fixed_fd, io, uring_priv);
+      create_read_command(sqe, fixed_fd, io, nsid, uring_priv);
     } else if (io->iocb.aio_lio_opcode == IO_CMD_LEGACY_WRITE) {
-        create_write_command(sqe, fixed_fd, io, uring_priv);
+        create_write_command(sqe, fixed_fd, io, nsid, uring_priv);
     } else {
       ceph_assert(0);
     }
@@ -349,13 +341,14 @@ ioring_queue_t::~ioring_queue_t()
 {
 }
 
-int ioring_queue_t::init(std::vector<int> &fds, bool use_ng)
+int ioring_queue_t::init(std::vector<int> &fds, bool use_ng, int nsid)
 {
   unsigned flags = 0;
 
   pthread_mutex_init(&d->cq_mutex, NULL);
   pthread_mutex_init(&d->sq_mutex, NULL);
   d->use_ng = use_ng;
+  d->nsid = nsid;
   if (use_ng) {
     d->use_append = d->cct->_conf->bluestore_zns_use_append;
   }

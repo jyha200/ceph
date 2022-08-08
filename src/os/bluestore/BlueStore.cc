@@ -5372,6 +5372,7 @@ int BlueStore::_open_bdev(bool create)
   int r = bdev->open(p);
   if (bdev->is_smr()) {
     zns_opt_zone_limit = cct->_conf->bluestore_zns_opt_zone_limit;
+    do_locked_alloc = cct->_conf->bluestore_zns_per_zone_lock;
   }
   if (r < 0)
     goto fail;
@@ -13661,7 +13662,7 @@ int BlueStore::queue_transactions(
   // writes to the drive.  This is a temporary solution until ZONE APPEND
   // support matures in the kernel.  For more information please see:
   // https://www.usenix.org/conference/vault20/presentation/bjorling
-  if (bdev->need_alloc_submit_sync()) {
+  if (bdev->need_alloc_submit_sync() && do_locked_alloc == false) {
     atomic_alloc_and_submit_lock.lock();
   }
 
@@ -13731,8 +13732,14 @@ int BlueStore::queue_transactions(
   // execute (start)
   _txc_state_proc(txc);
 
-  if (bdev->need_alloc_submit_sync()) {
+  if (bdev->need_alloc_submit_sync() && do_locked_alloc == false) {
     atomic_alloc_and_submit_lock.unlock();
+  }
+
+  if (bdev->is_smr() && do_locked_alloc) {
+    for (auto& alloc_lock : txc->alloc_locks) {
+      alloc_lock->unlock();
+    }
   }
 
   // we're immediately readable (unlike FileStore)
@@ -15077,9 +15084,15 @@ int BlueStore::_do_alloc_write(
       hint2 = o->get_hint();
     }
   }
-  prealloc_left = alloc->allocate(
-    need, hint2, need,
-    hint, &prealloc);
+  if (bdev->is_smr() && do_locked_alloc) {
+    prealloc_left = alloc->locked_allocate(
+        need, hint2, need,
+        hint, &prealloc, &txc->alloc_locks);
+  } else {
+    prealloc_left = alloc->allocate(
+        need, hint2, need,
+        hint, &prealloc);
+  }
   if (prealloc_left < 0 || prealloc_left < (int64_t)need) {
     dout(5) << __func__ << "::NCB::failed allocation of " << need << " bytes!! alloc=" << alloc << dendl;
     derr << __func__ << " failed to allocate 0x" << std::hex << need

@@ -25,7 +25,7 @@ struct ioring_queue_t final : public io_queue_t {
   ioring_queue_t(unsigned iodepth_, bool hipri_, bool sq_thread_, CephContext* cct);
   ~ioring_queue_t() final;
 
-  int init(std::vector<int> &fds, bool use_append) final;
+  int init(std::vector<int> &fds, bool use_append, int nsid = -1) final;
   void shutdown() final;
 
   int submit_batch(aio_iter begin, aio_iter end, uint16_t aios_size,

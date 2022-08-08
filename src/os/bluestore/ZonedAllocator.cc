@@ -48,14 +48,28 @@ ZonedAllocator::ZonedAllocator(CephContext* cct,
   ldout(cct, 1) << " max_open_zone 0x" << std::hex << max_open_zone << std::dec
     << dendl;
   active_zones.resize(max_open_zone);
+  per_zone_lock_enabled = cct->_conf->bluestore_zns_per_zone_lock;
+  if (cct->_conf->bluestore_zns_zone_cap != 0) {
+    zone_cap = cct->_conf->bluestore_zns_zone_cap;
+  } else {
+    zone_cap = zone_size;
+  }
+
+  reserve_for_zns_fs = cct->_conf->bluestore_zns_fs_reserve;
+
+  if (per_zone_lock_enabled) {
+    for (unsigned i = 0 ; i < max_open_zone; i++) {
+      per_zone_locks.push_back(new std::mutex);
+    }
+  }
 
   zone_states.resize(num_zones);
   num_available_zones = num_zones;
   if (cct->_conf->bluestore_zns_fs) {
     reserved_zone_for_fs = first_seq_zone_num;
     zone_to_assign_for_zns_fs = reserved_zone_for_fs;
-    first_seq_zone_num += RESERVE_FOR_ZNS_FS;
-    num_available_zones = num_zones - RESERVE_FOR_ZNS_FS;
+    first_seq_zone_num += reserve_for_zns_fs;
+    num_available_zones = num_zones - reserve_for_zns_fs;
     open_zone_for_fs_total = cct->_conf->bluestore_zns_fs_zone;
     ceph_assert(cct->_conf->bluestore_zns_fs_zone > open_zone_for_fs_frag);
     open_zone_for_fs = open_zone_for_fs_total - open_zone_for_fs_frag;
@@ -129,9 +143,31 @@ int64_t ZonedAllocator::allocate(
   uint64_t alloc_unit,
   uint64_t max_alloc_size,
   int64_t hint,
-  PExtentVector *extents)
+  PExtentVector *extents) {
+  return locked_allocate(
+    want_size,
+    alloc_unit,
+    max_alloc_size,
+    hint,
+    extents,
+    nullptr);
+}
+
+int64_t ZonedAllocator::locked_allocate(
+  uint64_t want_size,
+  uint64_t alloc_unit,
+  uint64_t max_alloc_size,
+  int64_t hint,
+  PExtentVector *extents, LockVector* lockv)
 {
-  std::lock_guard l(lock);
+  bool do_locked_alloc = per_zone_lock_enabled && (lockv != nullptr);
+  if (do_locked_alloc) {
+    if (lockv->find(&lock) == lockv->end()) {
+      lock.lock();
+    }
+  } else {
+    lock.lock();
+  }
   auto hint2 = alloc_unit;
 
   ceph_assert(want_size % block_size == 0);
@@ -139,6 +175,7 @@ int64_t ZonedAllocator::allocate(
   ldout(cct, 10) << " trying to allocate 0x"
 		 << std::hex << want_size << std::dec << dendl;
   uint64_t remaining_size = want_size;
+
   while(remaining_size > 0) {
     uint64_t target_idx;
     switch(hint) {
@@ -183,6 +220,12 @@ int64_t ZonedAllocator::allocate(
     if (get_remaining_space(zone_num) == 0) {
       select_other_zone(target_idx);
     }
+    if (do_locked_alloc) {
+      auto res = lockv->insert(per_zone_locks[target_idx]);
+      if (res.second == true) {
+        per_zone_locks[target_idx]->lock();
+      }
+    }
 
     extents->emplace_back(bluestore_pextent_t(offset, target_size));
   ldout(cct, 10) << " allocated 0x"
@@ -203,6 +246,12 @@ int64_t ZonedAllocator::allocate(
         ceph_assert(false);
     }
   }
+  if (do_locked_alloc) {
+    lockv->insert(&lock);
+  } else {
+    lock.unlock();
+  }
+
   return want_size;
 }
 

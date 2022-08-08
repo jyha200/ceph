@@ -510,8 +510,10 @@ int KernelDevice::_aio_start()
     dout(10) << __func__ << dendl;
     int r;
     if (io_to_ng) {
-      dout(1) << __func__ << " init queue with fd_ngs" << dendl;
-      r = io_queue->init(fd_ngs, true);
+      // TODO parse nsid larger than 10
+      int nsid = (*ng_path.rbegin()) - '0';
+      dout(1) << __func__ << " init queue with fd_ngs nsid " << nsid << dendl;
+      r = io_queue->init(fd_ngs, true, nsid);
     } else {
       dout(1) << __func__ << " init queue with fd_directs" << dendl;
       r = io_queue->init(fd_directs, false);
