@@ -339,6 +339,10 @@ int RocksDBStore::tryInterpret(const string &key, const string &val, rocksdb::Op
     int ret = string2bool(val, disableWAL);
     if (ret != 0)
       return ret;
+  } else if (key == "concurrent_merge") {
+    int ret = string2bool(val, concurrent_merge);
+    if (ret != 0)
+      return ret;
   } else {
     //unrecognize config options.
     return -EINVAL;
@@ -362,7 +366,7 @@ int RocksDBStore::ParseOptionsFromStringStatic(
   function<int(const string&, const string&, rocksdb::Options&)> interp)
 {
   // keep aligned with func tryInterpret
-  const set<string> need_interp_keys = {"compaction_threads", "flusher_threads", "compact_on_mount", "disableWAL"};
+  const set<string> need_interp_keys = {"compaction_threads", "flusher_threads", "compact_on_mount", "disableWAL", "concurrent_merge"};
   rocksdb::Status status;
   std::unordered_map<std::string, std::string> str_map;
   status = StringToMap(opt_str, &str_map);
@@ -1581,6 +1585,7 @@ int RocksDBStore::submit_transaction_sync(KeyValueDB::Transaction t)
 RocksDBStore::RocksDBTransactionImpl::RocksDBTransactionImpl(RocksDBStore *_db)
 {
   db = _db;
+  bat.concurrent_merge = _db->concurrent_merge;
 }
 
 void RocksDBStore::RocksDBTransactionImpl::put_bat(

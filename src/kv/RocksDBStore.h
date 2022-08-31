@@ -187,6 +187,7 @@ public:
   /// compact the underlying rocksdb store
   bool compact_on_mount;
   bool disableWAL;
+  bool concurrent_merge;
   const uint64_t delete_range_threshold;
   void compact() override;
 
@@ -233,6 +234,7 @@ public:
     compact_thread(this),
     compact_on_mount(false),
     disableWAL(false),
+    concurrent_merge(false),
     delete_range_threshold(cct->_conf.get_val<uint64_t>("rocksdb_delete_range_threshold"))
   {}
 
