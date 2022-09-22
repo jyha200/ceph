@@ -186,6 +186,11 @@ private:
 void BlueFS::append_try_flush(FileWriter *h, const char* buf, size_t len) {
   size_t max_size = 1ull << 30; // cap to 1GB
   bool need_preflush = false;
+  size_t orig_len = len;
+
+  if (h->writer_type == WRITER_WAL) {
+    dout(10) << __func__ << " " << h << " len 0x" << std::hex << orig_len << std::dec << dendl;
+  }
 
   while (len > 0) {
     bool need_flush = true;
@@ -197,12 +202,16 @@ void BlueFS::append_try_flush(FileWriter *h, const char* buf, size_t len) {
       len -= l;
       need_flush = h->get_buffer_length() >= cct->_conf->bluefs_min_flush_size;
     }
-    if (need_flush) {
+    if (need_flush && h->writer_type != WRITER_WAL) {
       flush(h, true);
       // make sure we've made any progress with flush hence the
       // loop doesn't iterate forever
       ceph_assert(h->get_buffer_length() < max_size);
     }
+  }
+
+  if (h->writer_type == WRITER_WAL) {
+    dout(10) << __func__ << " " << h << " len 0x" << std::hex << orig_len << std::dec << " done" <<dendl;
   }
 
   if (need_preflush) {
@@ -587,14 +596,12 @@ int BlueFS::mkfs(uuid_d osd_uuid, const bluefs_layout_t& layout)
     r = _allocate(
         vselector->select_prefer_bdev(log_file->vselector_hint),
         cct->_conf->bluefs_max_log_runway,
-        &log_file->fnode,
-        0);
+        &log_file->fnode);
   } else {
     r = _allocate(
         vselector->select_prefer_bdev(log_file->vselector_hint),
         cct->_conf->bluefs_max_log_runway,
-        &log_file->fnode,
-        0);
+        &log_file->fnode);
   }
   vselector->add_usage(log_file->vselector_hint, log_file->fnode);
   ceph_assert(r == 0);
@@ -2452,9 +2459,7 @@ void BlueFS::_compact_log_async(std::unique_lock<ceph::mutex>& l)
     dout(10) << __func__ << " old_log_jump_to 0x" << std::hex << old_log_jump_to
              << " need 0x" << (old_log_jump_to + cct->_conf->bluefs_max_log_runway) << std::dec << dendl;
     r = _allocate(vselector->select_prefer_bdev(log_file->vselector_hint),
-		      cct->_conf->bluefs_max_log_runway,
-                      &log_file->fnode,
-                      old_log_jump_to);
+		      cct->_conf->bluefs_max_log_runway, &log_file->fnode);
     ceph_assert(r == 0);
     //adjust usage as flush below will need it
     vselector->add_usage(log_file->vselector_hint, log_file->fnode);
@@ -2486,8 +2491,7 @@ void BlueFS::_compact_log_async(std::unique_lock<ceph::mutex>& l)
 
   // allocate
   //FIXME: check if we want DB here?
-  r = _allocate(BlueFS::BDEV_DB, new_log_jump_to,
-                    &new_log->fnode, 0);
+  r = _allocate(BlueFS::BDEV_DB, new_log_jump_to, &new_log->fnode);
   ceph_assert(r == 0);
 
   // we might have some more ops in log_t due to _allocate call
@@ -2664,8 +2668,7 @@ int BlueFS::_flush_and_sync_log(std::unique_lock<ceph::mutex>& l,
     int r = _allocate(
       vselector->select_prefer_bdev(log_writer->file->vselector_hint),
       cct->_conf->bluefs_max_log_runway,
-      &log_writer->file->fnode,
-      log_writer->file->fnode.get_allocated());
+      &log_writer->file->fnode);
     ceph_assert(r == 0);
     vselector->add_usage(log_writer->file->vselector_hint, log_writer->file->fnode);
     log_t.op_file_update(log_writer->file->fnode);
@@ -2879,8 +2882,7 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
 
   if (zns_fs && h->file->fnode.ino > 1) {
     int r = _allocate(vselector->select_prefer_bdev(h->file->vselector_hint),
-        length,
-        &h->file->fnode, offset);
+        length, &h->file->fnode);
     if (r < 0) {
       derr << __func__ << " allocated: 0x" << std::hex << allocated
         << " offset: 0x" << offset << " length: 0x" << length << std::dec
@@ -2916,7 +2918,11 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
       h->file->is_dirty = true;
     }
   }
-  dout(20) << __func__ << " file now, unflushed " << h->file->fnode << dendl;
+  if (h->file->fnode.ino > 1) {
+    dout(10)<< __func__ << " ino " << h->file->fnode.ino << " writer " << h->writer_type << " size 0x" << std::hex << h->file->fnode.size << dendl;
+  }
+
+  dout(10) << __func__ << " file now, unflushed " << h->file->fnode << dendl;
 
   uint64_t x_off = 0;
   auto p = h->file->fnode.seek(offset, &x_off);
@@ -2977,7 +2983,7 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
       }
       if (zns_fs) {
         buffered = false;
-        //dout(1) << __func__ << " offset " << std::hex<< offset + bloff << dendl;
+        dout(10) << __func__ << " offset " << std::hex<< offset + bloff << dendl;
         if (h->file->fnode.ino <= 1) {
           bdev[p->bdev]->aio_legacy_write(p->offset + x_off, t, ioc, buffered, h->write_hint);
         } else {
@@ -3096,6 +3102,9 @@ int BlueFS::_flush(FileWriter *h, bool force, std::unique_lock<ceph::mutex>& l)
 
 int BlueFS::_flush(FileWriter *h, bool force, bool *flushed)
 {
+  if (h->writer_type == WRITER_WAL) {
+    dout(10) << __func__ << " " << h << " flush start" << dendl;
+  }
   uint64_t length = h->get_buffer_length();
   uint64_t offset = h->pos;
   if (flushed) {
@@ -3116,6 +3125,12 @@ int BlueFS::_flush(FileWriter *h, bool force, bool *flushed)
   dout(10) << __func__ << " " << h << " 0x"
            << std::hex << offset << "~" << length << std::dec
 	   << " to " << h->file->fnode << dendl;
+  if (h->writer_type == WRITER_WAL) {
+    dout(10) << __func__ << " " << h << " 0x"
+      << std::hex << offset << "~" << length << std::dec << dendl;
+    ceph_assert(length % 4096 == 0);
+    ceph_assert(offset % 4096 == 0);
+  }
   ceph_assert(h->pos <= h->file->fnode.size);
   int r = _flush_range(h, offset, length);
   if (flushed) {
@@ -3303,9 +3318,9 @@ uint64_t BlueFS::get_meta_zone_addr(uint64_t need) {
 
 
 int BlueFS::_allocate_for_zns(uint8_t id, uint64_t len,
-		      bluefs_fnode_t* node, uint64_t offset) {
+		      bluefs_fnode_t* node, bool wal) {
   dout(10) << __func__ << " len 0x" << std::hex << len << " alloc_unit 0x"
-    << alloc_size[id] << std::dec << " from " << (int)id << dendl;
+    << alloc_size[id] << std::dec << " from " << (int)id << " wal " << wal << dendl;
   ceph_assert(id < alloc.size());
   ceph_assert(zns_fs);
 
@@ -3335,7 +3350,10 @@ int BlueFS::_allocate_for_zns(uint8_t id, uint64_t len,
       need += fragment_size;
       auto aligned_need = need / alloc_size[id] * alloc_size[id];
       auto fragment_need = need - aligned_need;
-      auto hint = BLUEFS_ZNS_FS;
+      auto hint = BLUEFS_ZNS_FS_DATA;
+      if (wal) {
+        ceph_assert(fragment_need == 0);
+      }
       auto hint2 = node->ino;
       PExtentVector extents;
       PExtentVector fragment_extent;
@@ -3380,18 +3398,17 @@ int BlueFS::_allocate_for_zns(uint8_t id, uint64_t len,
     }
     return 0;
   } else {
-    return _allocate_for_zns(id + 1, len, node, offset);
+    return _allocate_for_zns(id + 1, len, node, wal);
   }
 }
 
-int BlueFS::_allocate(uint8_t id, uint64_t len,
-		      bluefs_fnode_t* node, uint64_t offset)
+int BlueFS::_allocate(uint8_t id, uint64_t len, bluefs_fnode_t* node, bool wal)
 {
   if (zns_fs) {
-    return _allocate_for_zns(id, len, node, offset);
+    return _allocate_for_zns(id, len, node, wal);
   }
   dout(10) << __func__ << " len 0x" << std::hex << len << std::dec
-           << " from " << (int)id << " off 0x" << std::hex << offset << dendl;
+           << " from " << (int)id << dendl;
   ceph_assert(id < alloc.size());
   int64_t alloc_len = 0;
   PExtentVector extents;
@@ -3428,7 +3445,7 @@ int BlueFS::_allocate(uint8_t id, uint64_t len,
       dout(20) << __func__ << " fallback to bdev "
 	       << (int)id + 1
 	       << dendl;
-      return _allocate(id + 1, len, node, offset);
+      return _allocate(id + 1, len, node, wal);
     } else {
       derr << __func__ << " allocation failed, needed 0x" << std::hex << need
            << dendl;

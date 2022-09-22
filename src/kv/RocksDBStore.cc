@@ -495,6 +495,10 @@ int RocksDBStore::load_rocksdb_options(bool create_if_missing, rocksdb::Options&
     opt.wal_dir = path + ".wal";
   }
 
+  if (kv_options.count("aligned_wal")) {
+    opt.aligned_wal = true;
+  }
+
   // Since ceph::for_each_substr doesn't return a value and
   // std::stoull does throw, we may as well just catch everything here.
   try {

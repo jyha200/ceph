@@ -6448,6 +6448,7 @@ int BlueStore::_prepare_db_environment(bool create, bool read_only,
     }
   }
 
+  kv_options["aligned_wal"] = true;
 
   db = KeyValueDB::create(cct,
 			  kv_backend,

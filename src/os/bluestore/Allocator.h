@@ -17,9 +17,10 @@
 #include "include/ceph_assert.h"
 #include "bluestore_types.h"
 
-static const int64_t BLUEFS_ZNS_FS = 1;
-static const int64_t BLUEFS_ZNS_FS_FRAG = 2;
-static const int64_t BLUEFS_ZNS_DATA = 3;
+static const int64_t BLUEFS_ZNS_FS_DATA = 1;
+static const int64_t BLUEFS_ZNS_FS_WAL = 2;
+static const int64_t BLUEFS_ZNS_FS_FRAG = 3;
+static const int64_t BLUEFS_ZNS_DATA = 4;
 
 class Allocator {
 public:

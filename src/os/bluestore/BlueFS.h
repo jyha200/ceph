@@ -401,10 +401,8 @@ private:
     return bdev[BDEV_SLOW] ? BDEV_SLOW : BDEV_DB;
   }
   const char* get_device_name(unsigned id);
-  int _allocate(uint8_t bdev, uint64_t len,
-		bluefs_fnode_t* node, uint64_t offset = 0xFFFFFFFFFFFFFFFFUL);
-  int _allocate_for_zns(uint8_t bdev, uint64_t len,
-		bluefs_fnode_t* node, uint64_t offset = 0xFFFFFFFFFFFFFFFFUL);
+  int _allocate(uint8_t bdev, uint64_t len, bluefs_fnode_t* node, bool wal = false);
+  int _allocate_for_zns(uint8_t bdev, uint64_t len, bluefs_fnode_t* node, bool wal);
   int _allocate_without_fallback(uint8_t id, uint64_t len,
 				 PExtentVector* extents);
 
@@ -605,6 +603,10 @@ public:
   void handle_discard(unsigned dev, interval_set<uint64_t>& to_release);
 
   void flush(FileWriter *h, bool force = false) {
+    if (h->writer_type == WRITER_WAL) {
+      return;
+    }
+
     std::unique_lock l(lock);
     int r = _flush(h, force, l);
     ceph_assert(r == 0);
