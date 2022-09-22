@@ -2881,17 +2881,36 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
   // previously allocated extents.
 
   if (zns_fs && h->file->fnode.ino > 1) {
-    int r = _allocate(vselector->select_prefer_bdev(h->file->vselector_hint),
-        length, &h->file->fnode);
-    if (r < 0) {
-      derr << __func__ << " allocated: 0x" << std::hex << allocated
-        << " offset: 0x" << offset << " length: 0x" << length << std::dec
-        << dendl;
-      vselector->add_usage(h->file->vselector_hint, h->file->fnode); // undo
-      ceph_abort_msg("bluefs enospc");
-      return r;
+    if (h->writer_type == WRITER_WAL) {
+      if (allocated < offset + length) {
+        uint64_t alloc_unit = 1024*1024*32;
+        uint64_t alloc_size = (offset + length - allocated + alloc_unit - 1) / alloc_unit * alloc_unit;
+        int r = _allocate(vselector->select_prefer_bdev(h->file->vselector_hint),
+            alloc_size, &h->file->fnode, h->writer_type == WRITER_WAL);
+        if (r < 0) {
+          derr << __func__ << " allocated: 0x" << std::hex << allocated
+            << " offset: 0x" << offset << " length: 0x" << length << std::dec
+            << dendl;
+          vselector->add_usage(h->file->vselector_hint, h->file->fnode); // undo
+          ceph_abort_msg("bluefs enospc");
+          return r;
+        }
+        h->file->is_dirty = true;
+        h->file->fnode.size = allocated + alloc_size;
+      }
+    } else {
+      int r = _allocate(vselector->select_prefer_bdev(h->file->vselector_hint),
+          length, &h->file->fnode, h->writer_type == WRITER_WAL);
+      if (r < 0) {
+        derr << __func__ << " allocated: 0x" << std::hex << allocated
+          << " offset: 0x" << offset << " length: 0x" << length << std::dec
+          << dendl;
+        vselector->add_usage(h->file->vselector_hint, h->file->fnode); // undo
+        ceph_abort_msg("bluefs enospc");
+        return r;
+      }
+      h->file->is_dirty = true;
     }
-    h->file->is_dirty = true;
   } else if (allocated < offset + length) {
     // we should never run out of log space here; see the min runway check
     // in _flush_and_sync_log.
@@ -2911,7 +2930,7 @@ int BlueFS::_flush_range(FileWriter *h, uint64_t offset, uint64_t length)
   }
   if (h->file->fnode.size < offset + length) {
     h->file->fnode.size = offset + length;
-    if (h->file->fnode.ino > 1) {
+    if (h->file->fnode.ino > 1 && h->writer_type != WRITER_WAL) {
       // we do not need to dirty the log file (or it's compacting
       // replacement) when the file size changes because replay is
       // smart enough to discover it on its own.
@@ -3353,6 +3372,7 @@ int BlueFS::_allocate_for_zns(uint8_t id, uint64_t len,
       auto hint = BLUEFS_ZNS_FS_DATA;
       if (wal) {
         ceph_assert(fragment_need == 0);
+        hint = BLUEFS_ZNS_FS_WAL;
       }
       auto hint2 = node->ino;
       PExtentVector extents;
