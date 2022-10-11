@@ -101,6 +101,7 @@ public:
   };
   std::list<post_addr_t> post_addrs;
   bool allow_eio;
+  std::chrono::system_clock::time_point stamp;
 
   // for zns fs
   unsigned id = 0;

@@ -293,7 +293,7 @@ void HMSMRDevice::do_aio_submit(uint64_t zone, bool completed) {
     << " running " << ioc->num_running.load() <<dendl;
 
   ioc->num_running++;
-  ioc->num_pending--;
+  auto decreased = (--ioc->num_pending);
 
   dout(10) << __func__ << " after submission ioc " << ioc
     << " pending " << ioc->num_pending.load()
@@ -312,6 +312,10 @@ void HMSMRDevice::do_aio_submit(uint64_t zone, bool completed) {
   if (r < 0) {
     derr << " aio submit got " << cpp_strerror(r) << dendl;
     ceph_assert(r == 0);
+  }
+
+  if (decreased == 0) {
+    ioc->stamp = std::chrono::system_clock::now();
   }
 
   pending_ios[zone].running = true;

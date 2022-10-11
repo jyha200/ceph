@@ -189,6 +189,12 @@ const string BLUESTORE_GLOBAL_STATFS_KEY = "bluestore_statfs";
  */
 #define EXTENT_SHARD_KEY_SUFFIX 'x'
 
+//#define PROF (1)
+#ifdef PROF
+std::atomic<size_t> count[10];
+std::atomic<size_t> total[10][20];
+#endif
+
 /*
  * string encoding in the key
  *
@@ -12105,6 +12111,14 @@ void BlueStore::_txc_update_store_statfs(TransContext *txc)
 
 void BlueStore::txc_aio_finish(void *p) {
   TransContext* txc = static_cast<TransContext*>(p);
+#ifdef PROF
+  if (txc->post_write) {
+    txc->stamps.push_back(txc->ioc.stamp);
+  } else {
+    txc->stamps.push_back(std::chrono::system_clock::now());
+  }
+  txc->stamps.push_back(std::chrono::system_clock::now());
+#endif
   if (txc->post_write) {
     IOContext* ioc = &txc->ioc;
     auto addr_iter = ioc->post_addrs.begin();
@@ -12164,6 +12178,9 @@ void BlueStore::txc_aio_finish(void *p) {
 
     _txc_finalize_kv(txc, txc->t);
   }
+#ifdef PROF
+  txc->stamps.push_back(std::chrono::system_clock::now());
+#endif
 
   _txc_state_proc(txc);
 }
@@ -12176,6 +12193,9 @@ void BlueStore::_txc_state_proc(TransContext *txc)
     switch (txc->get_state()) {
     case TransContext::STATE_PREPARE:
       throttle.log_state_latency(*txc, logger, l_bluestore_state_prepare_lat);
+#ifdef PROF
+      txc->stamps.push_back(std::chrono::system_clock::now());
+#endif
       if (txc->ioc.has_pending_aios()) {
 	txc->set_state(TransContext::STATE_AIO_WAIT);
 #ifdef WITH_BLKIN
@@ -12186,11 +12206,20 @@ void BlueStore::_txc_state_proc(TransContext *txc)
 	txc->had_ios = true;
 	_txc_aio_submit(txc);
 	return;
+      } else {
+#ifdef PROF
+        txc->stamps.push_back(std::chrono::system_clock::now());
+        txc->stamps.push_back(std::chrono::system_clock::now());
+        txc->stamps.push_back(std::chrono::system_clock::now());
+#endif
       }
       // ** fall-thru **
 
     case TransContext::STATE_AIO_WAIT:
       {
+#ifdef PROF
+      txc->stamps.push_back(std::chrono::system_clock::now());
+#endif
 	mono_clock::duration lat = throttle.log_state_latency(
 	  *txc, logger, l_bluestore_state_aio_wait_lat);
 	if (ceph::to_seconds<double>(lat) >= cct->_conf->bluestore_log_op_age) {
@@ -12262,6 +12291,9 @@ void BlueStore::_txc_state_proc(TransContext *txc)
 	_deferred_queue(txc);
 	return;
       }
+#ifdef PROF
+      txc->stamps.push_back(std::chrono::system_clock::now());
+#endif
       txc->set_state(TransContext::STATE_FINISHING);
       break;
 
@@ -12295,6 +12327,10 @@ void BlueStore::_txc_finish_io(TransContext *txc)
 
   OpSequencer *osr = txc->osr.get();
   std::lock_guard l(osr->qlock);
+
+#ifdef PROF
+  txc->stamps.push_back(std::chrono::system_clock::now());
+#endif
   txc->set_state(TransContext::STATE_IO_DONE);
   txc->ioc.release_running_aios();
   OpSequencer::q_list_t::iterator p = osr->q.iterator_to(*txc);
@@ -12467,6 +12503,9 @@ void BlueStore::_txc_apply_kv(TransContext *txc, bool sync_submit_transaction)
 
     int r = cct->_conf->bluestore_debug_omit_kv_commit ? 0 : db->submit_transaction(txc->t);
     ceph_assert(r == 0);
+#ifdef PROF
+    txc->stamps.push_back(std::chrono::system_clock::now());
+#endif
     txc->set_state(TransContext::STATE_KV_SUBMITTED);
     if (txc->osr->kv_submitted_waiters) {
       std::lock_guard l(txc->osr->qlock);
@@ -12504,6 +12543,9 @@ void BlueStore::_txc_committed_kv(TransContext *txc)
   throttle.complete_kv(*txc);
   {
     std::lock_guard l(txc->osr->qlock);
+#ifdef PROF
+    txc->stamps.push_back(std::chrono::system_clock::now());
+#endif
     txc->set_state(TransContext::STATE_KV_DONE);
     if (txc->ch->commit_queue) {
       txc->ch->commit_queue->queue(txc->oncommits);
@@ -12544,6 +12586,39 @@ void BlueStore::_txc_finish(TransContext *txc)
   OpSequencer::q_list_t releasing_txc;
   {
     std::lock_guard l(osr->qlock);
+#ifdef PROF
+    auto now_time = std::chrono::system_clock::now();
+    txc->stamps.push_back(now_time);
+    int j = 0;
+    std::chrono::system_clock::time_point prev;
+    for (auto stamp : txc->stamps) {
+      if (j > 0) {
+        total[0][j - 1] += ((std::chrono::nanoseconds)(stamp - prev)).count();
+      }
+      prev = stamp;
+      j++;
+    }
+
+    count[0]++;
+    static std::chrono::system_clock::time_point prev_time;
+    static bool first = true;
+    std::chrono::nanoseconds diff_time = now_time - prev_time;
+    if (first || diff_time.count() > 1000000000L) {
+      first = false;
+      prev_time = now_time;
+
+      std::string str;
+      str += __func__;
+      str += " first ";
+      for (int i = 0 ; i < 15 ; i++) {
+        str += std::to_string(total[0][i] / count[0]) + " ";
+        total[0][i] = 0;
+      }
+      count[0] = 0;
+
+      dout(1) << str << dendl;
+    }
+#endif
     txc->set_state(TransContext::STATE_DONE);
     bool notify = false;
     while (!osr->q.empty()) {
@@ -13621,6 +13696,9 @@ int BlueStore::_deferred_replay()
     }
     TransContext *txc = _txc_create(ch.get(), osr,  nullptr);
     txc->deferred_txn = deferred_txn;
+#ifdef PROF
+    txc->stamps.push_back(std::chrono::system_clock::now());
+#endif
     txc->set_state(TransContext::STATE_KV_DONE);
     _txc_state_proc(txc);
   }
@@ -13650,6 +13728,9 @@ int BlueStore::queue_transactions(
     tls, &on_applied, &on_commit, &on_applied_sync);
 
   auto start = mono_clock::now();
+#ifdef PROF
+  auto start2 = std::chrono::system_clock::now();
+#endif
 
   Collection *c = static_cast<Collection*>(ch.get());
   OpSequencer *osr = c->osr.get();
@@ -13668,6 +13749,9 @@ int BlueStore::queue_transactions(
   // prepare
   TransContext *txc = _txc_create(static_cast<Collection*>(ch.get()), osr,
 				  &on_commit, op);
+#ifdef PROF
+  txc->stamps.push_back(start2);
+#endif
 
   for (vector<Transaction>::iterator p = tls.begin(); p != tls.end(); ++p) {
     txc->bytes += (*p).get_num_bytes();
