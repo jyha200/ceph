@@ -484,11 +484,11 @@ public:
   int fiemap(CollectionHandle& c, const ghobject_t& oid, uint64_t offset, size_t len, std::map<uint64_t, uint64_t>& destmap) override;
   int fiemap(CollectionHandle& c, const ghobject_t& oid, uint64_t offset, size_t len, ceph::buffer::list& outbl) override;
   using ObjectStore::getattr;
-  int getattr(CollectionHandle& c, const ghobject_t& oid, const char *name, ceph::buffer::ptr& value) override;
+  int getattr(CollectionHandle& c, const ghobject_t& oid, const char *name, ceph::buffer::ptr& value, bool do_delta = false) override;
   using ObjectStore::getattrs;
   int getattrs(CollectionHandle& c,
 	       const ghobject_t& oid,
-	       std::map<std::string,ceph::buffer::ptr,std::less<>>& aset) override;
+	       std::map<std::string,ceph::buffer::ptr,std::less<>>& aset, bool do_delta = false) override;
 
   int list_collections(std::vector<coll_t>& ls) override;
   bool collection_exists(const coll_t& c) override;

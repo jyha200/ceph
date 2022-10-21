@@ -1758,6 +1758,7 @@ PrimaryLogPG::PrimaryLogPG(OSDService *o, OSDMapRef curmap,
   snap_trimmer_machine.initiate();
 
   m_scrubber = make_unique<PrimaryLogScrub>(this);
+  zns_log_onode = o->cct->_conf->bluestore_zns_log_onode;
 }
 
 PrimaryLogPG::~PrimaryLogPG()
@@ -1969,6 +1970,10 @@ void PrimaryLogPG::do_request(
   default:
     ceph_abort_msg("bad message type in do_request");
   }
+}
+
+bool PrimaryLogPG::logging_object(const hobject_t& oid) {
+  return zns_log_onode && oid.oid.name.find("rbd_data.") != string::npos;
 }
 
 /** do_op - do an op
@@ -2313,10 +2318,12 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
              << dendl;
   }
 
+  bool do_delta = op->may_write() && logging_object(oid);
+
   int r = find_object_context(
     oid, &obc, can_create,
     m->has_flag(CEPH_OSD_FLAG_MAP_SNAP_CLONE),
-    &missing_oid);
+    &missing_oid, do_delta);
 
   // LIST_SNAPS needs the ssc too
   if (obc &&
@@ -11799,7 +11806,7 @@ ObjectContextRef PrimaryLogPG::create_object_context(const object_info_t& oi,
 ObjectContextRef PrimaryLogPG::get_object_context(
   const hobject_t& soid,
   bool can_create,
-  const map<string, bufferlist, less<>> *attrs)
+  const map<string, bufferlist, less<>> *attrs, bool do_delta)
 {
   auto it_objects = recovery_state.get_pg_log().get_log().objects.find(soid);
   ceph_assert(
@@ -11823,7 +11830,7 @@ ObjectContextRef PrimaryLogPG::get_object_context(
       ceph_assert(it_oi != attrs->end());
       bv = it_oi->second;
     } else {
-      int r = pgbackend->objects_get_attr(soid, OI_ATTR, &bv);
+      int r = pgbackend->objects_get_attr(soid, OI_ATTR, &bv, do_delta);
       if (r < 0) {
 	if (!can_create) {
 	  dout(10) << __func__ << ": no obc for soid "
@@ -11840,7 +11847,8 @@ ObjectContextRef PrimaryLogPG::get_object_context(
 	SnapSetContext *ssc = get_snapset_context(
 	  soid, true, 0, false);
         ceph_assert(ssc);
-	obc = create_object_context(oi, ssc);
+        obc = create_object_context(oi, ssc);
+        obc->do_delta = do_delta;
 	dout(10) << __func__ << ": " << obc << " " << soid
 		 << " " << obc->rwstate
 		 << " oi: " << obc->obs.oi
@@ -11877,10 +11885,11 @@ ObjectContextRef PrimaryLogPG::get_object_context(
       if (attrs) {
 	obc->attr_cache = *attrs;
       } else {
-	int r = pgbackend->objects_get_attrs(
-	  soid,
-	  &obc->attr_cache);
-	ceph_assert(r == 0);
+        int r = pgbackend->objects_get_attrs(
+            soid,
+            &obc->attr_cache,
+            do_delta);
+        ceph_assert(r == 0);
       }
     }
 
@@ -11934,13 +11943,14 @@ int PrimaryLogPG::find_object_context(const hobject_t& oid,
 				      ObjectContextRef *pobc,
 				      bool can_create,
 				      bool map_snapid_to_clone,
-				      hobject_t *pmissing)
+				      hobject_t *pmissing,
+				      bool do_delta)
 {
   FUNCTRACE(cct);
   ceph_assert(oid.pool == static_cast<int64_t>(info.pgid.pool()));
   // want the head?
   if (oid.snap == CEPH_NOSNAP) {
-    ObjectContextRef obc = get_object_context(oid, can_create);
+    ObjectContextRef obc = get_object_context(oid, can_create, nullptr, do_delta);
     if (!obc) {
       if (pmissing)
         *pmissing = oid;
@@ -11974,7 +11984,7 @@ int PrimaryLogPG::find_object_context(const hobject_t& oid,
 	     << " map_snapid_to_clone=true" << dendl;
     if (oid.snap > ssc->snapset.seq) {
       // already must be readable
-      ObjectContextRef obc = get_object_context(head, false);
+      ObjectContextRef obc = get_object_context(head, false, nullptr, do_delta);
       dout(10) << __func__ << " " << oid << " @" << oid.snap
 	       << " snapset " << ssc->snapset
 	       << " maps to head" << dendl;
@@ -12008,7 +12018,7 @@ int PrimaryLogPG::find_object_context(const hobject_t& oid,
 	return -EAGAIN;
       }
 
-      ObjectContextRef obc = get_object_context(oid, false);
+      ObjectContextRef obc = get_object_context(oid, false, nullptr, do_delta);
       if (!obc || !obc->obs.exists) {
 	dout(10) << __func__ << " " << oid << " @" << oid.snap
 		 << " snapset " << ssc->snapset
@@ -12033,7 +12043,7 @@ int PrimaryLogPG::find_object_context(const hobject_t& oid,
 
   // head?
   if (oid.snap > ssc->snapset.seq) {
-    ObjectContextRef obc = get_object_context(head, false);
+    ObjectContextRef obc = get_object_context(head, false, nullptr, do_delta);
     dout(10) << __func__ << " " << head
 	     << " want " << oid.snap << " > snapset seq " << ssc->snapset.seq
 	     << " -- HIT " << obc->obs
@@ -12071,7 +12081,7 @@ int PrimaryLogPG::find_object_context(const hobject_t& oid,
     return -EAGAIN;
   }
 
-  ObjectContextRef obc = get_object_context(soid, false);
+  ObjectContextRef obc = get_object_context(soid, false, nullptr, do_delta);
   if (!obc || !obc->obs.exists) {
     if (pmissing)
       *pmissing = soid;

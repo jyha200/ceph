@@ -68,6 +68,8 @@ public:
    */
   struct OpContext;
   class CopyCallback;
+  bool zns_log_onode = false;
+  bool logging_object(const hobject_t& oid);
 
   /**
    * CopyResults stores the object metadata of interest to a copy initiator.
@@ -1019,7 +1021,8 @@ protected:
   ObjectContextRef get_object_context(
     const hobject_t& soid,
     bool can_create,
-    const std::map<std::string, ceph::buffer::list, std::less<>> *attrs = 0
+    const std::map<std::string, ceph::buffer::list, std::less<>> *attrs = 0,
+    bool do_delta = false
     );
 
   void context_registry_on_change();
@@ -1030,7 +1033,7 @@ protected:
 			  ObjectContextRef *pobc,
 			  bool can_create,
 			  bool map_snapid_to_clone=false,
-			  hobject_t *missing_oid=NULL);
+			  hobject_t *missing_oid=NULL, bool do_delta = false);
 
   void add_object_context_to_pg_stat(ObjectContextRef obc, pg_stat_t *stat);
 

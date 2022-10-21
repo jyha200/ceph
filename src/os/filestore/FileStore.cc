@@ -4583,7 +4583,7 @@ bool FileStore::debug_mdata_eio(const ghobject_t &oid) {
 
 // objects
 
-int FileStore::getattr(CollectionHandle& ch, const ghobject_t& oid, const char *name, bufferptr &bp)
+int FileStore::getattr(CollectionHandle& ch, const ghobject_t& oid, const char *name, bufferptr &bp, bool do_delta)
 {
   tracepoint(objectstore, getattr_enter, ch->cid.c_str());
   const coll_t& cid = !_need_temp_object_collection(ch->cid, oid) ? ch->cid : ch->cid.get_temp();
@@ -4638,7 +4638,7 @@ int FileStore::getattr(CollectionHandle& ch, const ghobject_t& oid, const char *
 
 int FileStore::getattrs(CollectionHandle& ch,
 			const ghobject_t& oid,
-			std::map<std::string,bufferptr,std::less<>>& aset)
+			std::map<std::string,bufferptr,std::less<>>& aset, bool do_delta)
 {
   tracepoint(objectstore, getattrs_enter, ch->cid.c_str());
   const coll_t& cid = !_need_temp_object_collection(ch->cid, oid) ? ch->cid : ch->cid.get_temp();

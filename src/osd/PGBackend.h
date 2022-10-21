@@ -553,11 +553,11 @@ typedef std::shared_ptr<const OSDMap> OSDMapRef;
    int objects_get_attr(
      const hobject_t &hoid,
      const std::string &attr,
-     ceph::buffer::list *out);
+     ceph::buffer::list *out, bool do_delta = false);
 
    virtual int objects_get_attrs(
      const hobject_t &hoid,
-     std::map<std::string, ceph::buffer::list, std::less<>> *out);
+     std::map<std::string, ceph::buffer::list, std::less<>> *out, bool do_delta = false);
 
    virtual int objects_read_sync(
      const hobject_t &hoid,

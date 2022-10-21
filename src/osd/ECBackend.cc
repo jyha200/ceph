@@ -2494,12 +2494,12 @@ int ECBackend::send_all_remaining_reads(
 
 int ECBackend::objects_get_attrs(
   const hobject_t &hoid,
-  map<string, bufferlist, less<>> *out)
+  map<string, bufferlist, less<>> *out, bool do_delta)
 {
   int r = store->getattrs(
     ch,
     ghobject_t(hoid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
-    *out);
+    *out, do_delta);
   if (r < 0)
     return r;
 

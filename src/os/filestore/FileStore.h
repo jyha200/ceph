@@ -691,8 +691,8 @@ public:
   // attrs
   using ObjectStore::getattr;
   using ObjectStore::getattrs;
-  int getattr(CollectionHandle& c, const ghobject_t& oid, const char *name, ceph::bufferptr &bp) override;
-  int getattrs(CollectionHandle& c, const ghobject_t& oid, std::map<std::string,ceph::bufferptr,std::less<>>& aset) override;
+  int getattr(CollectionHandle& c, const ghobject_t& oid, const char *name, ceph::bufferptr &bp, bool do_delta = false) override;
+  int getattrs(CollectionHandle& c, const ghobject_t& oid, std::map<std::string,ceph::bufferptr,std::less<>>& aset, bool do_delta = false) override;
 
   int _setattrs(const coll_t& cid, const ghobject_t& oid, std::map<std::string,ceph::bufferptr>& aset,
 		const SequencerPosition &spos);

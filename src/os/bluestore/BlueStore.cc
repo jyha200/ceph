@@ -2225,7 +2225,7 @@ void BlueStore::Blob::get_ref(
            << std::dec << " " << *this << dendl;
 
   if (used_in_blob.is_empty()) {
-    uint32_t min_release_size =
+    uint32_t min_release_size = coll == nullptr ? 4096 :
       get_blob().get_release_size(coll->store->min_alloc_size);
     uint64_t l = get_blob().get_logical_length();
     dout(20) << __func__ << " init 0x" << std::hex << l << ", "
@@ -2426,10 +2426,11 @@ BlueStore::OldExtent* BlueStore::OldExtent::create(CollectionRef c,
 
 bool BlueStore::ExtentMap::zns_mode = false;
 uint64_t BlueStore::ExtentMap::zone_size = 0;
+CephContext* BlueStore::ExtentMap::cct_ = nullptr;
 
 BlueStore::ExtentMap::ExtentMap(Onode *o)
   : onode(o),
-    inline_bl(
+    inline_bl(o->c==nullptr ? 256:
       o->c->store->cct->_conf->bluestore_extent_map_inline_shard_prealloc_size) {
 }
 
@@ -3129,9 +3130,14 @@ unsigned BlueStore::ExtentMap::decode_some(bufferlist& bl)
   uint64_t pos = 0;
   uint64_t prev_len = 0;
   unsigned n = 0;
+  bool add_cache = (onode->c != nullptr);
+  if (cct_) {
+    ldout(cct_, 10) << __func__ << " add to cache " << add_cache << dendl;
+  }
+
 
   while (!p.end()) {
-    Extent *le = new Extent();
+    Extent *le = new Extent(0, add_cache);
     uint64_t blobid;
     denc_varint(blobid, p);
     if ((blobid & BLOBID_FLAG_CONTIGUOUS) == 0) {
@@ -3151,32 +3157,39 @@ unsigned BlueStore::ExtentMap::decode_some(bufferlist& bl)
     le->length = prev_len;
 
     if (blobid & BLOBID_FLAG_SPANNING) {
-      dout(30) << __func__ << "  getting spanning blob "
-	       << (blobid >> BLOBID_SHIFT_BITS) << dendl;
-      le->assign_blob(get_spanning_blob(blobid >> BLOBID_SHIFT_BITS));
+      if (cct_) {
+        ldout(cct_, 30) << __func__ << "  getting spanning blob "
+          << (blobid >> BLOBID_SHIFT_BITS) << dendl;
+      }
+      le->assign_blob(get_spanning_blob(blobid >> BLOBID_SHIFT_BITS), add_cache);
     } else {
       blobid >>= BLOBID_SHIFT_BITS;
       if (blobid) {
-	le->assign_blob(blobs[blobid - 1]);
-	ceph_assert(le->blob);
+        le->assign_blob(blobs[blobid - 1], add_cache);
+        ceph_assert(le->blob);
       } else {
-	Blob *b = new Blob();
+        Blob *b = new Blob();
         uint64_t sbid = 0;
         b->decode(onode->c, p, struct_v, &sbid, false);
-	blobs[n] = b;
-	onode->c->open_shared_blob(sbid, b);
-	le->assign_blob(b);
+        blobs[n] = b;
+        if (add_cache) {
+          onode->c->open_shared_blob(sbid, b);
+        }
+        le->assign_blob(b, add_cache);
       }
-      // we build ref_map dynamically for non-spanning blobs
-      le->blob->get_ref(
-	onode->c,
-	le->blob_offset,
-	le->length);
+      if (add_cache) {
+        // we build ref_map dynamically for non-spanning blobs
+        le->blob->get_ref(
+            onode->c,
+            le->blob_offset,
+            le->length);
+      }
     }
+
     pos += prev_len;
     ++n;
     extent_map.insert(*le);
-    if (zns_mode) {
+    if (zns_mode && add_cache) {
       for (auto& e : le->blob->get_blob().get_extents()) {
         ref_zone(e.offset / zone_size);
       }
@@ -3238,7 +3251,9 @@ void BlueStore::ExtentMap::decode_spanning_blobs(
     spanning_blob_map[b->id] = b;
     uint64_t sbid = 0;
     b->decode(onode->c, p, struct_v, &sbid, true);
-    onode->c->open_shared_blob(sbid, b);
+    if (onode->c != nullptr) {
+      onode->c->open_shared_blob(sbid, b);
+    }
   }
 }
 
@@ -5373,6 +5388,7 @@ int BlueStore::_open_bdev(bool create)
   if (bdev->is_smr()) {
     zns_opt_zone_limit = cct->_conf->bluestore_zns_opt_zone_limit;
   }
+  zns_log_onode = cct->_conf->bluestore_zns_log_onode;
   if (r < 0)
     goto fail;
 
@@ -6323,6 +6339,116 @@ int BlueStore::close_db_environment()
   return 0;
 }
 
+struct OnodeMergeOperator : public KeyValueDB::MergeOperator {
+  void merge_nonexistent(
+    const char *rdata, size_t rlen, std::string *new_value) override {
+    *new_value = std::string(rdata, rlen);
+  }
+
+  BlueStore::Onode* decode(bufferlist buf) {
+    ghobject_t oid;
+    BlueStore::Onode* on = new BlueStore::Onode();
+    auto p = buf.front().begin_deep();
+    on->onode.decode(p);
+    on->extent_map.decode_spanning_blobs(p);
+    if (on->onode.extent_map_shards.empty()) {
+      denc(on->extent_map.inline_bl, p);
+      on->extent_map.decode_some(on->extent_map.inline_bl);
+    }
+    else {
+      on->extent_map.init_shards(false, false);
+    }
+    return on;
+  }
+
+  void merge(
+    const char *ldata, size_t llen,
+    const char *rdata, size_t rlen,
+    std::string *new_value) override {
+    bufferlist l_buf;
+    l_buf.append(ldata, llen);
+    bufferlist r_buf;
+    r_buf.append(rdata, rlen);
+    ceph_assert(llen > 0);
+    ceph_assert(rlen > 0);
+
+    BlueStore::Onode* l_node = decode(l_buf);
+    BlueStore::Onode* r_node = decode(r_buf);
+
+    ceph_assert(l_node->onode.nid == l_node->onode.nid);
+
+    // TODO : support overwritten case
+    l_node->onode.size += r_node->onode.size;
+
+    // TODO : support cleared flag bits
+    l_node->onode.flags |= r_node->onode.flags;
+
+    // TODO : support attrs
+    ceph_assert(l_node->onode.attrs.empty());
+    ceph_assert(r_node->onode.attrs.empty());
+    // TODO : support extent_shard
+    ceph_assert(l_node->onode.extent_map_shards.empty());
+    ceph_assert(r_node->onode.extent_map_shards.empty());
+
+    l_node->onode.expected_object_size += r_node->onode.expected_object_size;
+    l_node->onode.expected_write_size += r_node->onode.expected_write_size;
+    l_node->onode.alloc_hint_flags |= r_node->onode.alloc_hint_flags;
+
+    // TODO : support erased zone refs
+    for (auto &iter : r_node->onode.zone_offset_refs) {
+      l_node->onode.zone_offset_refs[iter.first] = iter.second;
+    }
+
+    ceph_assert(l_node->extent_map.spanning_blob_map.empty());
+    ceph_assert(r_node->extent_map.spanning_blob_map.empty());
+
+    for (auto& iter : r_node->extent_map.extent_map) {
+      l_node->extent_map.add(
+        iter.logical_offset,
+        iter.blob_offset,
+        iter.length,
+        iter.blob,
+        false);
+    }
+
+    // bound encode
+    size_t bound = 0;
+    denc(l_node->onode, bound);
+    l_node->extent_map.bound_encode_spanning_blobs(bound);
+    if (l_node->onode.extent_map_shards.empty()) {
+      denc(l_node->extent_map.inline_bl, bound);
+    }
+
+    // encode
+    bufferlist bl;
+    {
+      auto p = bl.get_contiguous_appender(bound, true);
+      denc(l_node->onode, p);
+      l_node->extent_map.encode_spanning_blobs(p);
+      if (l_node->onode.extent_map_shards.empty()) {
+        denc(l_node->extent_map.inline_bl, p);
+      }
+    }
+
+    new_value->clear();
+    if (bl.is_contiguous() && bl.length() > 0) {
+      new_value->append(bl.buffers().front().c_str(), bl.length());
+    } else {
+      for (auto& buf : bl.buffers()) {
+        new_value->append(buf.c_str(), buf.length());
+      }
+    }
+
+    delete l_node;
+    delete r_node;
+  }
+  // We use each operator name and each prefix to construct the
+  // overall RocksDB operator name for consistency check at open time.
+  const char *name() const override {
+    return "onode_merger";
+  }
+};
+
 int BlueStore::_prepare_db_environment(bool create, bool read_only,
 				       std::string* _fn, std::string* _kv_backend)
 {
@@ -6468,6 +6594,10 @@ int BlueStore::_prepare_db_environment(bool create, bool read_only,
 
   FreelistManager::setup_merge_operators(db, freelist_type);
   db->set_merge_operator(PREFIX_STAT, merge_op);
+  if (zns_log_onode) {
+    std::shared_ptr<OnodeMergeOperator> onode_merge_op(new OnodeMergeOperator);
+    db->set_merge_operator(PREFIX_OBJ, onode_merge_op);
+  }
   db->set_cache_size(cache_kv_ratio * cache_size);
   return 0;
 }
@@ -6882,6 +7012,9 @@ int BlueStore::mkfs()
     if (cct->_conf->bluestore_zns_opt_zone_scan) {
       ExtentMap::zone_size = zone_size;
       ExtentMap::zns_mode = true;
+    }
+    if (zns_log_onode) {
+      ExtentMap::cct_ = cct;
     }
 		if (cct->_conf->contains("bluestore_cns_path")) {
       // reserve 2 zones for blueof superblock, 1 zones for MBR
@@ -11156,12 +11289,17 @@ int BlueStore::getattr(
   CollectionHandle &c_,
   const ghobject_t& oid,
   const char *name,
-  bufferptr& value)
+  bufferptr& value,
+  bool do_delta)
 {
   Collection *c = static_cast<Collection *>(c_.get());
   dout(15) << __func__ << " " << c->cid << " " << oid << " " << name << dendl;
   if (!c->exists)
     return -ENOENT;
+
+  if (do_delta) {
+    return -ENOENT;
+  }
 
   int r;
   {
@@ -11194,7 +11332,8 @@ int BlueStore::getattr(
 int BlueStore::getattrs(
   CollectionHandle &c_,
   const ghobject_t& oid,
-  map<string,bufferptr,less<>>& aset)
+  map<string,bufferptr,less<>>& aset,
+  bool do_delta)
 {
   Collection *c = static_cast<Collection *>(c_.get());
   dout(15) << __func__ << " " << c->cid << " " << oid << dendl;
@@ -11915,6 +12054,9 @@ int BlueStore::_open_super_meta()
       if (cct->_conf->bluestore_zns_opt_zone_scan) {
         ExtentMap::zone_size = zone_size;
         ExtentMap::zns_mode = true;
+      }
+      if (zns_log_onode) {
+        ExtentMap::cct_ = cct;
       }
       dout(1) << __func__ << " zone_size 0x" << std::hex << zone_size << std::dec << dendl;
       ceph_assert(bdev->is_smr());
@@ -17090,6 +17232,10 @@ void BlueStore::_apply_padding(uint64_t head_pad,
   }
 }
 
+bool BlueStore::check_ok_to_log(OnodeRef &o) {
+  return o->oid.hobj.oid.name.find("rbd_data.") != string::npos;
+}
+
 void BlueStore::_record_onode(OnodeRef &o, KeyValueDB::Transaction &txn)
 {
   // finalize extent_map shards
@@ -17135,8 +17281,13 @@ void BlueStore::_record_onode(OnodeRef &o, KeyValueDB::Transaction &txn)
 	    << extent_part << " bytes inline extents)"
 	    << dendl;
 
-
-  txn->set(PREFIX_OBJ, key, bl);
+  if (zns_log_onode && check_ok_to_log(o)){
+    dout(10) << __func__  << " merge onode " << o->oid << dendl;
+    txn->merge(PREFIX_OBJ, key, bl);
+  } else {
+    dout(10) << __func__  << " set onode " << o->oid << dendl;
+    txn->set(PREFIX_OBJ, key, bl);
+  }
 }
 
 void BlueStore::_log_alerts(osd_alert_list_t& alerts)

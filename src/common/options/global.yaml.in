@@ -4680,6 +4680,12 @@ options:
   - hybrid
   - zoned
   with_legacy: true
+- name: bluestore_zns_log_onode
+  type: bool
+  level: advanced
+  desc: latency profile
+  default: false
+  with_legacy: true
 - name: bluestore_zns_opt_zone_scan
   type: bool
   level: advanced

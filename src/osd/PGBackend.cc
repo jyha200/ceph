@@ -451,14 +451,16 @@ int PGBackend::objects_list_range(
 int PGBackend::objects_get_attr(
   const hobject_t &hoid,
   const string &attr,
-  bufferlist *out)
+  bufferlist *out,
+  bool do_delta)
 {
   bufferptr bp;
   int r = store->getattr(
     ch,
     ghobject_t(hoid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
     attr.c_str(),
-    bp);
+    bp,
+    do_delta);
   if (r >= 0 && out) {
     out->clear();
     out->push_back(std::move(bp));
@@ -468,12 +470,14 @@ int PGBackend::objects_get_attr(
 
 int PGBackend::objects_get_attrs(
   const hobject_t &hoid,
-  map<string, bufferlist, less<>> *out)
+  map<string, bufferlist, less<>> *out,
+  bool do_delta)
 {
   return store->getattrs(
     ch,
     ghobject_t(hoid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
-    *out);
+    *out,
+    do_delta);
 }
 
 void PGBackend::rollback_setattrs(

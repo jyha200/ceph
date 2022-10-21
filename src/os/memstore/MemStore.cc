@@ -365,7 +365,7 @@ int MemStore::fiemap(CollectionHandle& ch, const ghobject_t& oid,
 }
 
 int MemStore::getattr(CollectionHandle &c_, const ghobject_t& oid,
-		      const char *name, ceph::buffer::ptr& value)
+		      const char *name, ceph::buffer::ptr& value, bool do_delta)
 {
   Collection *c = static_cast<Collection*>(c_.get());
   dout(10) << __func__ << " " << c->cid << " " << oid << " " << name << dendl;
@@ -384,7 +384,7 @@ int MemStore::getattr(CollectionHandle &c_, const ghobject_t& oid,
 }
 
 int MemStore::getattrs(CollectionHandle &c_, const ghobject_t& oid,
-		       std::map<std::string,ceph::buffer::ptr,std::less<>>& aset)
+		       std::map<std::string,ceph::buffer::ptr,std::less<>>& aset, bool do_delta)
 {
   Collection *c = static_cast<Collection*>(c_.get());
   dout(10) << __func__ << " " << c->cid << " " << oid << dendl;

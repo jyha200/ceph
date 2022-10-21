@@ -1334,7 +1334,8 @@ int KStore::getattr(
   CollectionHandle& ch,
   const ghobject_t& oid,
   const char *name,
-  bufferptr& value)
+  bufferptr& value,
+  bool do_delta)
 {
   dout(15) << __func__ << " " << ch->cid << " " << oid << " " << name << dendl;
   Collection *c = static_cast<Collection*>(ch.get());
@@ -1363,7 +1364,8 @@ int KStore::getattr(
 int KStore::getattrs(
   CollectionHandle& ch,
   const ghobject_t& oid,
-  map<string,bufferptr,less<>>& aset)
+  map<string,bufferptr,less<>>& aset,
+  bool do_delta)
 {
   dout(15) << __func__ << " " << ch->cid << " " << oid << dendl;
   Collection *c = static_cast<Collection*>(ch.get());

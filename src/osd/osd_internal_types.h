@@ -34,6 +34,7 @@ struct ObjectContext {
   SnapSetContext *ssc;  // may be null
 
   Context *destructor_callback;
+  bool do_delta = false;
 
 public:
 

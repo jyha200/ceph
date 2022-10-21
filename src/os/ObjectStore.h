@@ -578,7 +578,7 @@ public:
    * @returns 0 on success, negative error code on failure.
    */
   virtual int getattr(CollectionHandle &c, const ghobject_t& oid,
-		      const char *name, ceph::buffer::ptr& value) = 0;
+		      const char *name, ceph::buffer::ptr& value, bool do_delta = false) = 0;
 
   /**
    * getattr -- get an xattr of an object
@@ -591,9 +591,9 @@ public:
    */
   int getattr(
     CollectionHandle &c, const ghobject_t& oid,
-    const std::string& name, ceph::buffer::list& value) {
+    const std::string& name, ceph::buffer::list& value, bool do_delta = false) {
     ceph::buffer::ptr bp;
-    int r = getattr(c, oid, name.c_str(), bp);
+    int r = getattr(c, oid, name.c_str(), bp, do_delta);
     value.push_back(bp);
     return r;
   }
@@ -607,7 +607,7 @@ public:
    * @returns 0 on success, negative error code on failure.
    */
   virtual int getattrs(CollectionHandle &c, const ghobject_t& oid,
-		       std::map<std::string,ceph::buffer::ptr, std::less<>>& aset) = 0;
+		       std::map<std::string,ceph::buffer::ptr, std::less<>>& aset, bool do_delta = false) = 0;
 
   /**
    * getattrs -- get all of the xattrs of an object
@@ -618,9 +618,9 @@ public:
    * @returns 0 on success, negative error code on failure.
    */
   int getattrs(CollectionHandle &c, const ghobject_t& oid,
-	       std::map<std::string,ceph::buffer::list,std::less<>>& aset) {
+	       std::map<std::string,ceph::buffer::list,std::less<>>& aset, bool do_delta = false) {
     std::map<std::string,ceph::buffer::ptr,std::less<>> bmap;
-    int r = getattrs(c, oid, bmap);
+    int r = getattrs(c, oid, bmap, do_delta);
     for (auto i = bmap.begin(); i != bmap.end(); ++i) {
       aset[i->first].append(i->second);
     }

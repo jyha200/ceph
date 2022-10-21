@@ -530,7 +530,7 @@ public:
     std::atomic_int nref = {0};     ///< reference count
     int16_t id = -1;                ///< id, for spanning blobs only, >= 0
     int16_t last_encoded_id = -1;   ///< (ephemeral) used during encoding only
-    SharedBlobRef shared_blob;      ///< shared blob state (if any)
+    SharedBlobRef shared_blob = nullptr;      ///< shared blob state (if any)
 
   private:
     mutable bluestore_blob_t blob;  ///< decoded blob metadata
@@ -705,30 +705,33 @@ public:
     uint32_t blob_offset = 0;         ///< blob offset
     uint32_t length = 0;              ///< length
     BlobRef  blob;                    ///< the blob with our data
+    bool add_cache = true;
 
     /// ctor for lookup only
-    explicit Extent(uint32_t lo) : ExtentBase(), logical_offset(lo) { }
+    explicit Extent(uint32_t lo, bool add_cache = true) : ExtentBase(), logical_offset(lo), add_cache(add_cache) { }
     /// ctor for delayed initialization (see decode_some())
     explicit Extent() : ExtentBase() {
     }
     /// ctor for general usage
-    Extent(uint32_t lo, uint32_t o, uint32_t l, BlobRef& b)
+    Extent(uint32_t lo, uint32_t o, uint32_t l, BlobRef& b, bool add_cache = true)
       : ExtentBase(),
-        logical_offset(lo), blob_offset(o), length(l) {
-      assign_blob(b);
+        logical_offset(lo), blob_offset(o), length(l),add_cache(add_cache) {
+      assign_blob(b, add_cache);
     }
     ~Extent() {
-      if (blob) {
+      if (blob && add_cache) {
 	blob->shared_blob->get_cache()->rm_extent();
       }
     }
 
     void dump(ceph::Formatter* f) const;
 
-    void assign_blob(const BlobRef& b) {
+    void assign_blob(const BlobRef& b, bool add_cache = true) {
       ceph_assert(!blob);
       blob = b;
-      blob->shared_blob->get_cache()->add_extent();
+      if (add_cache) {
+        blob->shared_blob->get_cache()->add_extent();
+      }
     }
 
     // comparators for intrusive_set
@@ -831,8 +834,11 @@ public:
     }
 
     struct DeleteDisposer {
-      void operator()(Extent *e) { delete e; }
+      void operator()(Extent *e) {
+        delete e;
+      }
     };
+    static CephContext* cct_;
 
     ExtentMap(Onode *o);
     ~ExtentMap() {
@@ -926,8 +932,8 @@ public:
     extent_map_t::const_iterator seek_lextent(uint64_t offset) const;
 
     /// add a new Extent
-    void add(uint32_t lo, uint32_t o, uint32_t l, BlobRef& b) {
-      extent_map.insert(*new Extent(lo, o, l, b));
+    void add(uint32_t lo, uint32_t o, uint32_t l, BlobRef& b, bool add_cache = true) {
+      extent_map.insert(*new Extent(lo, o, l, b, add_cache));
     }
 
     void ref_zone(size_t zone) {
@@ -1121,6 +1127,17 @@ public:
     /// protect flush_txns
     ceph::mutex flush_lock = ceph::make_mutex("BlueStore::Onode::flush_lock");
     ceph::condition_variable flush_cond;   ///< wait here for uncommitted txns
+
+    Onode() :
+      nref(0),
+      c(nullptr),
+      oid(hobject_t()),
+      key(""),
+      exists(false),
+      cached(false),
+      pinned(false),
+      extent_map(this) {
+    }
 
     Onode(Collection *c, const ghobject_t& o,
 	  const mempool::bluestore_cache_meta::string& k)
@@ -1564,6 +1581,8 @@ public:
     }
   };
   bool zns_opt_zone_limit = false;
+  bool zns_log_onode = false;
+  bool check_ok_to_log(OnodeRef &o);
 
   struct WriteContext {
     bool buffered = false;          ///< buffered write
@@ -2973,10 +2992,10 @@ public:
     const std::string& section_name, ceph::Formatter *f) override;
 
   int getattr(CollectionHandle &c, const ghobject_t& oid, const char *name,
-	      ceph::buffer::ptr& value) override;
+	      ceph::buffer::ptr& value, bool do_delta = false) override;
 
   int getattrs(CollectionHandle &c, const ghobject_t& oid,
-	       std::map<std::string,ceph::buffer::ptr, std::less<>>& aset) override;
+	       std::map<std::string,ceph::buffer::ptr, std::less<>>& aset, bool do_delta = false) override;
 
   int list_collections(std::vector<coll_t>& ls) override;
 

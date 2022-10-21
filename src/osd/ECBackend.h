@@ -661,7 +661,7 @@ public:
 
   int objects_get_attrs(
     const hobject_t &hoid,
-    std::map<std::string, ceph::buffer::list, std::less<>> *out) override;
+    std::map<std::string, ceph::buffer::list, std::less<>> *out, bool do_delta = false) override;
 
   void rollback_append(
     const hobject_t &hoid,
