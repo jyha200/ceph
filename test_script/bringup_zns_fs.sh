@@ -38,8 +38,8 @@ bringup_osd() {
   OSD_SECRET=$($BIN_DIR/ceph-authtool --gen-print-key)
   ID=$(echo "{\"cephx_secret\": \"$OSD_SECRET\"}" | $BIN_DIR/ceph osd new $UUID -i - -n client.admin -k /etc/ceph/ceph.client.admin.keyring)
   DEV=$1
-  sudo umount /dev/nvme2n1
   sudo rm -r /var/lib/ceph/osd/ceph-$ID
+  sudo dd if=/dev/zero of=/dev/sdc bs=1M count=1
 	sudo zbd reset $DEV
   mkdir /var/lib/ceph/osd/ceph-$ID
   sudo chown -R ceph:ceph /var/lib/ceph/osd/ceph-$ID
@@ -47,6 +47,7 @@ bringup_osd() {
   sudo $BIN_DIR/ceph-authtool --create-keyring /var/lib/ceph/osd/ceph-$ID/keyring --name osd.$ID --add-key $OSD_SECRET
   sudo $BIN_DIR/ceph-osd -i $ID --mkfs --osd-uuid $UUID --debug-osd 1
   echo "mkfs osd done"
+  exit
   sudo $BIN_DIR/ceph-osd -i $ID --debug-osd 1
   echo "brinup_osd done"
 }
