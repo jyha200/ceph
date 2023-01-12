@@ -430,7 +430,7 @@ std::ostream& operator<<(std::ostream& out, const bluestore_blob_use_tracker_t& 
 
 /// blob: a piece of data on disk
 struct bluestore_blob_t {
-private:
+public:
   PExtentVector extents;              ///< raw data position on device
   uint32_t logical_length = 0;        ///< original length of data stored in the blob
   uint32_t compressed_length = 0;     ///< compressed length if any
@@ -1039,7 +1039,7 @@ struct bluestore_onode_t {
     DENC_START(2, 1, p);
     denc_varint(v.nid, p);
     denc_varint(v.size, p);
-    //denc(v.attrs, p);
+    denc(v.attrs, p);
     denc(v.flags, p);
     denc(v.extent_map_shards, p);
     denc_varint(v.expected_object_size, p);

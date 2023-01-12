@@ -1973,7 +1973,7 @@ void PrimaryLogPG::do_request(
 }
 
 bool PrimaryLogPG::logging_object(const hobject_t& oid) {
-  return zns_log_onode && oid.oid.name.find("rbd_data.") != string::npos;
+  return zns_log_onode && oid.oid.name.find("rbd_data") != string::npos;
 }
 
 /** do_op - do an op
@@ -2318,7 +2318,8 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
              << dendl;
   }
 
-  bool do_delta = op->may_write() && logging_object(oid);
+  bool do_delta = op->may_write() && !op->may_read() && logging_object(oid);
+  dout(10) << __func__ << " " << oid << " delta " << do_delta << dendl;
 
   int r = find_object_context(
     oid, &obc, can_create,
@@ -2331,6 +2332,7 @@ void PrimaryLogPG::do_op(OpRequestRef& op)
       !obc->ssc) {
     obc->ssc = get_snapset_context(oid, true);
   }
+  dout(10) << __func__ << " " << oid << " r " << r << dendl;
 
   if (r == -EAGAIN) {
     // If we're not the primary of this OSD, we just return -EAGAIN. Otherwise,
@@ -5788,8 +5790,10 @@ int PrimaryLogPG::do_read(OpContext *ctx, OSDOp& osd_op) {
     op.extent.length = size;
 
   if (op.extent.offset >= size) {
-    op.extent.length = 0;
-    trimmed_read = true;
+    if (logging_object(soid) == false) {
+      op.extent.length = 0;
+      trimmed_read = true;
+    }
   } else if (op.extent.offset + op.extent.length > size) {
     op.extent.length = size - op.extent.offset;
     trimmed_read = true;

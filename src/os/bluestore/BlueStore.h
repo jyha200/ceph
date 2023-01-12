@@ -423,6 +423,8 @@ public:
       bluestore_shared_blob_t *persistent; ///< persistent part of the shared blob if any
     };
     BufferSpace bc;             ///< buffer cache
+    SharedBlob(void) : coll(nullptr), sbid_unloaded(0) {
+    }
 
     SharedBlob(Collection *_coll) : coll(_coll), sbid_unloaded(0) {
       if (get_cache()) {
@@ -532,7 +534,7 @@ public:
     int16_t last_encoded_id = -1;   ///< (ephemeral) used during encoding only
     SharedBlobRef shared_blob = nullptr;      ///< shared blob state (if any)
 
-  private:
+  public:
     mutable bluestore_blob_t blob;  ///< decoded blob metadata
 #ifdef CACHE_BLOB_BL
     mutable ceph::buffer::list blob_bl;     ///< cached encoded blob, blob is dirty if empty
@@ -856,7 +858,10 @@ public:
 
     bool encode_some(uint32_t offset, uint32_t length, ceph::buffer::list& bl,
 		     unsigned *pn);
+    bool encode_some2(uint32_t offset, uint32_t length, ceph::buffer::list& bl,
+		     unsigned *pn, CephContext* cct__);
     unsigned decode_some(ceph::buffer::list& bl);
+    void open_shared_blob2(uint64_t sbid, BlobRef b);
 
     void bound_encode_spanning_blobs(size_t& p);
     void encode_spanning_blobs(ceph::buffer::list::contiguous_appender& p);
@@ -869,6 +874,7 @@ public:
     }
 
     void update(KeyValueDB::Transaction t, bool force);
+    void update2(CephContext* cct__);
     decltype(BlueStore::Blob::id) allocate_spanning_blob_id();
     void reshard(
       KeyValueDB *db,
@@ -1105,6 +1111,7 @@ public:
     Collection *c;
     ghobject_t oid;
     bool post_write = false;
+    bool partial = false;
 
     /// key under PREFIX_OBJ where we are stored
     mempool::bluestore_cache_meta::string key;
@@ -1417,7 +1424,7 @@ public:
     OnodeCacheShard* get_onode_cache() const {
       return onode_map.cache;
     }
-    OnodeRef get_onode(const ghobject_t& oid, bool create, bool is_createop=false);
+    OnodeRef get_onode(const ghobject_t& oid, bool create, bool is_createop=false, bool partial_onode = false);
 
     // the terminology is confusing here, sorry!
     //
@@ -1582,7 +1589,7 @@ public:
   };
   bool zns_opt_zone_limit = false;
   bool zns_log_onode = false;
-  bool check_ok_to_log(OnodeRef &o);
+  bool check_ok_to_log(ghobject_t &o);
 
   struct WriteContext {
     bool buffered = false;          ///< buffered write
@@ -1789,8 +1796,8 @@ public:
       WriteContext wctx;
       uint64_t offset = 0;
       uint64_t length = 0;
-      ghobject_t oid;
       CollectionRef coll;
+      OnodeRef o;
     };
 
     std::list<PostWriteContext> post_wctxs;

@@ -2072,9 +2072,9 @@ BlueStore::SharedBlob::~SharedBlob()
 void BlueStore::SharedBlob::put()
 {
   if (--nref == 0) {
-    dout(20) << __func__ << " " << this
-	     << " removing self from set " << get_parent()
-	     << dendl;
+//    dout(20) << __func__ << " " << this
+//	     << " removing self from set " << get_parent()
+//	     << dendl;
   again:
     auto coll_snap = coll;
     if (coll_snap) {
@@ -2554,6 +2554,18 @@ void BlueStore::ExtentMap::dup(BlueStore* b, TransContext* txc,
   }
   newo->extent_map.dirty_range(dstoff, length);
 }
+
+void BlueStore::ExtentMap::update2(CephContext* cct__)
+{
+  inline_bl.clear();
+  unsigned n;
+  // we need to encode inline_bl to measure encoded length
+  bool never_happen = encode_some2(0, OBJECT_MAX_SIZE, inline_bl, &n, cct__);
+  inline_bl.reassign_to_mempool(mempool::mempool_bluestore_inline_bl);
+  ceph_assert(!never_happen);
+}
+
+
 void BlueStore::ExtentMap::update(KeyValueDB::Transaction t,
                                   bool force)
 {
@@ -2998,6 +3010,111 @@ void BlueStore::ExtentMap::reshard(
   clear_needs_reshard();
 }
 
+bool BlueStore::ExtentMap::encode_some2(
+  uint32_t offset,
+  uint32_t length,
+  bufferlist& bl,
+  unsigned *pn,
+  CephContext* cct__)
+{
+  Extent dummy(offset);
+  auto start = extent_map.lower_bound(dummy);
+  uint32_t end = offset + length;
+
+  __u8 struct_v = 2; // Version 2 differs from v1 in blob's ref_map
+                     // serialization only. Hence there is no specific
+                     // handling at ExtentMap level.
+
+  unsigned n = 0;
+  size_t bound = 0;
+  bool must_reshard = false;
+  for (auto p = start;
+       p != extent_map.end() && p->logical_offset < end;
+       ++p, ++n) {
+    ceph_assert(p->logical_offset >= offset);
+    p->blob->last_encoded_id = -1;
+    if (!p->blob->is_spanning() && p->blob_escapes_range(offset, length)) {
+      request_reshard(p->blob_start(), p->blob_end());
+      must_reshard = true;
+    }
+    if (!must_reshard) {
+      denc_varint(0, bound); // blobid
+      denc_varint(0, bound); // logical_offset
+      denc_varint(0, bound); // len
+      denc_varint(0, bound); // blob_offset
+
+      p->blob->bound_encode(
+        bound,
+        struct_v,
+        p->blob->shared_blob->get_sbid(),
+        false);
+    }
+  }
+  if (must_reshard) {
+    return true;
+  }
+
+  denc(struct_v, bound);
+  denc_varint(0, bound); // number of extents
+
+  {
+    auto app = bl.get_contiguous_appender(bound);
+    denc(struct_v, app);
+    denc_varint(n, app);
+    if (pn) {
+      *pn = n;
+    }
+
+    n = 0;
+    uint64_t pos = 0;
+    uint64_t prev_len = 0;
+    for (auto p = start;
+        p != extent_map.end() && p->logical_offset < end;
+        ++p, ++n) {
+      unsigned blobid;
+      bool include_blob = false;
+      if (p->blob->is_spanning()) {
+        blobid = p->blob->id << BLOBID_SHIFT_BITS;
+        blobid |= BLOBID_FLAG_SPANNING;
+      } else if (p->blob->last_encoded_id < 0) {
+        p->blob->last_encoded_id = n + 1;  // so it is always non-zero
+        include_blob = true;
+        blobid = 0;  // the decoder will infer the id from n
+      } else {
+        blobid = p->blob->last_encoded_id << BLOBID_SHIFT_BITS;
+      }
+      if (p->logical_offset == pos) {
+        blobid |= BLOBID_FLAG_CONTIGUOUS;
+      }
+      if (p->blob_offset == 0) {
+        blobid |= BLOBID_FLAG_ZEROOFFSET;
+      }
+      if (p->length == prev_len) {
+        blobid |= BLOBID_FLAG_SAMELENGTH;
+      } else {
+        prev_len = p->length;
+      }
+      denc_varint(blobid, app);
+      if ((blobid & BLOBID_FLAG_CONTIGUOUS) == 0) {
+        denc_varint_lowz(p->logical_offset - pos, app);
+      }
+      if ((blobid & BLOBID_FLAG_ZEROOFFSET) == 0) {
+        denc_varint_lowz(p->blob_offset, app);
+      }
+      if ((blobid & BLOBID_FLAG_SAMELENGTH) == 0) {
+        denc_varint_lowz(p->length, app);
+      }
+      pos = p->logical_end();
+      if (include_blob) {
+        p->blob->encode(app, struct_v, p->blob->shared_blob->get_sbid(), false);
+      }
+    }
+  }
+
+  return false;
+}
+
+
 bool BlueStore::ExtentMap::encode_some(
   uint32_t offset,
   uint32_t length,
@@ -3107,6 +3224,14 @@ bool BlueStore::ExtentMap::encode_some(
   return false;
 }
 
+void BlueStore::ExtentMap::open_shared_blob2(uint64_t sbid, BlobRef b)
+{
+  ceph_assert(!b->shared_blob);
+  const bluestore_blob_t& blob = b->get_blob();
+  ceph_assert(!blob.is_shared());
+  b->shared_blob = new SharedBlob();
+}
+
 unsigned BlueStore::ExtentMap::decode_some(bufferlist& bl)
 {
   /*
@@ -3174,6 +3299,8 @@ unsigned BlueStore::ExtentMap::decode_some(bufferlist& bl)
         blobs[n] = b;
         if (add_cache) {
           onode->c->open_shared_blob(sbid, b);
+        } else {
+          open_shared_blob2(sbid, b);
         }
         le->assign_blob(b, add_cache);
       }
@@ -4058,7 +4185,8 @@ uint64_t BlueStore::Collection::make_blob_unshared(SharedBlob *sb)
 BlueStore::OnodeRef BlueStore::Collection::get_onode(
   const ghobject_t& oid,
   bool create,
-  bool is_createop)
+  bool is_createop,
+  bool partial_onode)
 {
   ceph_assert(create ? ceph_mutex_is_wlocked(lock) : ceph_mutex_is_locked(lock));
 
@@ -4072,8 +4200,9 @@ BlueStore::OnodeRef BlueStore::Collection::get_onode(
   }
 
   OnodeRef o = onode_map.lookup(oid);
-  if (o)
+  if (o && (partial_onode == true || o->partial == false)) {
     return o;
+  }
 
   string key;
   get_object_key(store->cct, oid, &key);
@@ -4095,6 +4224,7 @@ BlueStore::OnodeRef BlueStore::Collection::get_onode(
 
     // new object, new onode
     on = new Onode(this, oid, key);
+    on->partial = partial_onode;
   } else {
     // loaded
     ceph_assert(r >= 0);
@@ -6340,13 +6470,18 @@ int BlueStore::close_db_environment()
 }
 
 struct OnodeMergeOperator : public KeyValueDB::MergeOperator {
+  CephContext* cct = nullptr;
+  OnodeMergeOperator(CephContext* cct)
+  : cct(cct)
+  {
+  }
+
   void merge_nonexistent(
     const char *rdata, size_t rlen, std::string *new_value) override {
     *new_value = std::string(rdata, rlen);
   }
 
   BlueStore::Onode* decode(bufferlist buf) {
-    ghobject_t oid;
     BlueStore::Onode* on = new BlueStore::Onode();
     auto p = buf.front().begin_deep();
     on->onode.decode(p);
@@ -6359,6 +6494,13 @@ struct OnodeMergeOperator : public KeyValueDB::MergeOperator {
       on->extent_map.init_shards(false, false);
     }
     return on;
+  }
+
+  template<typename T>
+  void compare_ant_update(T& left, T& right) {
+    if (left < right) {
+      left = right;
+    }
   }
 
   void merge(
@@ -6384,8 +6526,9 @@ struct OnodeMergeOperator : public KeyValueDB::MergeOperator {
     l_node->onode.flags |= r_node->onode.flags;
 
     // TODO : support attrs
-    ceph_assert(l_node->onode.attrs.empty());
-    ceph_assert(r_node->onode.attrs.empty());
+//    ceph_assert(l_node->onode.attrs.empty());
+//    ceph_assert(r_node->onode.attrs.empty());
+
     // TODO : support extent_shard
     ceph_assert(l_node->onode.extent_map_shards.empty());
     ceph_assert(r_node->onode.extent_map_shards.empty());
@@ -6410,6 +6553,7 @@ struct OnodeMergeOperator : public KeyValueDB::MergeOperator {
         iter.blob,
         false);
     }
+    l_node->extent_map.update2(cct);
 
     // bound encode
     size_t bound = 0;
@@ -6431,6 +6575,7 @@ struct OnodeMergeOperator : public KeyValueDB::MergeOperator {
     }
 
     new_value->clear();
+
     if (bl.is_contiguous() && bl.length() > 0) {
       new_value->append(bl.buffers().front().c_str(), bl.length());
     } else {
@@ -6595,7 +6740,7 @@ int BlueStore::_prepare_db_environment(bool create, bool read_only,
   FreelistManager::setup_merge_operators(db, freelist_type);
   db->set_merge_operator(PREFIX_STAT, merge_op);
   if (zns_log_onode) {
-    std::shared_ptr<OnodeMergeOperator> onode_merge_op(new OnodeMergeOperator);
+    std::shared_ptr<OnodeMergeOperator> onode_merge_op(new OnodeMergeOperator(cct));
     db->set_merge_operator(PREFIX_OBJ, onode_merge_op);
   }
   db->set_cache_size(cache_kv_ratio * cache_size);
@@ -11339,6 +11484,9 @@ int BlueStore::getattrs(
   dout(15) << __func__ << " " << c->cid << " " << oid << dendl;
   if (!c->exists)
     return -ENOENT;
+  if (do_delta) {
+    return -ENOENT;
+  }
 
   int r;
   {
@@ -12257,6 +12405,7 @@ void BlueStore::txc_aio_finish(void *p) {
       auto dirty_end = end;
       {
         auto c = post_wctx.coll;
+        auto o = post_wctx.o;
         std::unique_lock l(c->lock);
 
         for (auto& wi : wctx.writes) {
@@ -12276,7 +12425,6 @@ void BlueStore::txc_aio_finish(void *p) {
           dblob.allocated(b_off, final_length, extents);
           ceph_assert(dblob.has_csum() == false);
         }
-        auto o = c->get_onode(post_wctx.oid, false, false);
         _wctx_finish(txc, c, o, &wctx);
         if (end > o->onode.size) {
           dout(20) << __func__ << " extending size to 0x" << std::hex << end
@@ -14047,7 +14195,10 @@ void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t)
     OnodeRef &o = ovec[op->oid];
     if (!o) {
       ghobject_t oid = i.get_oid(op->oid);
-      o = c->get_onode(oid, create, op->op == Transaction::OP_CREATE);
+      o = c->get_onode(oid,
+        create,
+        op->op == Transaction::OP_CREATE,
+        check_ok_to_log(oid));
     }
     if (!create && (!o || !o->exists)) {
       dout(10) << __func__ << " op " << op->op << " got ENOENT on "
@@ -15798,7 +15949,7 @@ int BlueStore::_do_write(
   if (bdev->is_smr() && bdev->need_postpone_db_transaction()) {
     txc->post_write = true;
     o->post_write = true;
-    txc->post_wctxs.push_back({std::move(wctx), offset, length, o->oid, c});
+    txc->post_wctxs.push_back({std::move(wctx), offset, length, c, o});
   } else {
     _wctx_finish(txc, c, o, &wctx);
     if (end > o->onode.size) {
@@ -17232,8 +17383,8 @@ void BlueStore::_apply_padding(uint64_t head_pad,
   }
 }
 
-bool BlueStore::check_ok_to_log(OnodeRef &o) {
-  return o->oid.hobj.oid.name.find("rbd_data.") != string::npos;
+bool BlueStore::check_ok_to_log(ghobject_t& oid) {
+  return zns_log_onode && oid.hobj.oid.name.find("rbd_data") != string::npos;
 }
 
 void BlueStore::_record_onode(OnodeRef &o, KeyValueDB::Transaction &txn)
@@ -17281,7 +17432,7 @@ void BlueStore::_record_onode(OnodeRef &o, KeyValueDB::Transaction &txn)
 	    << extent_part << " bytes inline extents)"
 	    << dendl;
 
-  if (zns_log_onode && check_ok_to_log(o)){
+  if (check_ok_to_log(o->oid)){
     dout(10) << __func__  << " merge onode " << o->oid << dendl;
     txn->merge(PREFIX_OBJ, key, bl);
   } else {
