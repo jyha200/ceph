@@ -1588,8 +1588,8 @@ public:
     }
   };
   bool zns_opt_zone_limit = false;
-  bool zns_log_onode = false;
-  bool check_ok_to_log(ghobject_t &o);
+  static bool zns_log_onode;
+  static bool check_ok_to_log(ghobject_t &o);
 
   struct WriteContext {
     bool buffered = false;          ///< buffered write

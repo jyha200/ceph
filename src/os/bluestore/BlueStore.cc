@@ -603,6 +603,8 @@ static int get_key_zone_offset_object(
 }
 #endif
 
+bool BlueStore::zns_log_onode = false;
+
 template <int LogLevelV>
 void _dump_extent_map(CephContext *cct, const BlueStore::ExtentMap &em)
 {
@@ -2706,6 +2708,9 @@ void BlueStore::ExtentMap::reshard(
   KeyValueDB *db,
   KeyValueDB::Transaction t)
 {
+  if (BlueStore::check_ok_to_log(onode->oid)) {
+    return;
+  }
   auto cct = onode->c->store->cct; // used by dout
 
   dout(10) << __func__ << " 0x[" << std::hex << needs_reshard_begin << ","
@@ -12398,50 +12403,53 @@ void BlueStore::txc_aio_finish(void *p) {
   if (txc->post_write) {
     IOContext* ioc = &txc->ioc;
     auto addr_iter = ioc->post_addrs.begin();
-    for (auto& post_wctx : txc->post_wctxs) {
-      auto& wctx = post_wctx.wctx;
-      auto dirty_start = post_wctx.offset;
-      uint64_t end = post_wctx.offset + post_wctx.length;
-      auto dirty_end = end;
-      {
-        auto c = post_wctx.coll;
-        auto o = post_wctx.o;
-        std::unique_lock l(c->lock);
+    auto c = txc->post_wctxs.begin()->coll;
+    {
+      std::unique_lock l(c->lock);
 
-        for (auto& wi : wctx.writes) {
-          auto& dblob = wi.b->dirty_blob();
-          auto b_off = wi.post_write_offset;
-          auto final_length = wi.post_write_length;
-          PExtentVector extents;
-          auto remain = final_length;
-          while (remain > 0) {
-            auto& cur_addr = *addr_iter;
-            extents.push_back(
-                bluestore_pextent_t(cur_addr.offset, cur_addr.length));
-            ceph_assert(remain >= cur_addr.length);
-            remain -= cur_addr.length;
-            addr_iter++;
+      for (auto& post_wctx : txc->post_wctxs) {
+        auto& wctx = post_wctx.wctx;
+        auto dirty_start = post_wctx.offset;
+        uint64_t end = post_wctx.offset + post_wctx.length;
+        auto dirty_end = end;
+        {
+          dout(10) << __func__ << " " << __LINE__ << " " << (void*)c.get() << dendl;
+          auto o = post_wctx.o;
+
+          for (auto& wi : wctx.writes) {
+            auto& dblob = wi.b->dirty_blob();
+            auto b_off = wi.post_write_offset;
+            auto final_length = wi.post_write_length;
+            PExtentVector extents;
+            auto remain = final_length;
+            while (remain > 0) {
+              auto& cur_addr = *addr_iter;
+              extents.push_back(
+                  bluestore_pextent_t(cur_addr.offset, cur_addr.length));
+              ceph_assert(remain >= cur_addr.length);
+              remain -= cur_addr.length;
+              addr_iter++;
+            }
+            dblob.allocated(b_off, final_length, extents);
+            ceph_assert(dblob.has_csum() == false);
           }
-          dblob.allocated(b_off, final_length, extents);
-          ceph_assert(dblob.has_csum() == false);
-        }
-        _wctx_finish(txc, c, o, &wctx);
-        if (end > o->onode.size) {
-          dout(20) << __func__ << " extending size to 0x" << std::hex << end
-            << std::dec << dendl;
-          o->onode.size = end;
-        }
+          _wctx_finish(txc, c, o, &wctx);
+          if (end > o->onode.size) {
+            dout(20) << __func__ << " extending size to 0x" << std::hex << end
+              << std::dec << dendl;
+            o->onode.size = end;
+          }
 
-        o->extent_map.compress_extent_map(dirty_start, dirty_end - dirty_start);
-        o->extent_map.dirty_range(dirty_start, dirty_end - dirty_start);
+          o->extent_map.compress_extent_map(dirty_start, dirty_end - dirty_start);
+          o->extent_map.dirty_range(dirty_start, dirty_end - dirty_start);
+        }
       }
+      ioc->pending_aios.clear();
+      ioc->post_addrs.clear();
+      txc->post_wctxs.clear();
+
+      _txc_write_nodes(txc, txc->t);
     }
-    ioc->pending_aios.clear();
-    ioc->post_addrs.clear();
-    txc->post_wctxs.clear();
-
-    _txc_write_nodes(txc, txc->t);
-
     // journal deferred items
     if (txc->deferred_txn) {
       txc->deferred_txn->seq = ++deferred_seq;
@@ -17393,8 +17401,10 @@ void BlueStore::_record_onode(OnodeRef &o, KeyValueDB::Transaction &txn)
   std::string key(o->key.c_str(), o->key.size());
   o->extent_map.update(txn, false);
   if (o->extent_map.needs_reshard()) {
-    o->extent_map.reshard(db, txn);
-    o->extent_map.update(txn, true);
+    if (check_ok_to_log(o->oid)) {
+      o->extent_map.reshard(db, txn);
+      o->extent_map.update(txn, true);
+    }
     if (o->extent_map.needs_reshard()) {
       dout(20) << __func__ << " warning: still wants reshard, check options?"
 		<< dendl;
