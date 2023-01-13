@@ -1789,8 +1789,7 @@ public:
       WriteContext wctx;
       uint64_t offset = 0;
       uint64_t length = 0;
-      ghobject_t oid;
-      CollectionRef coll;
+      OnodeRef o;
     };
 
     std::list<PostWriteContext> post_wctxs;

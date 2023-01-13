@@ -12250,15 +12250,15 @@ void BlueStore::txc_aio_finish(void *p) {
   if (txc->post_write) {
     IOContext* ioc = &txc->ioc;
     auto addr_iter = ioc->post_addrs.begin();
+    auto c = txc->ch;
+    {
+    std::unique_lock l(c->lock);
     for (auto& post_wctx : txc->post_wctxs) {
       auto& wctx = post_wctx.wctx;
       auto dirty_start = post_wctx.offset;
       uint64_t end = post_wctx.offset + post_wctx.length;
       auto dirty_end = end;
       {
-        auto c = post_wctx.coll;
-        std::unique_lock l(c->lock);
-
         for (auto& wi : wctx.writes) {
           auto& dblob = wi.b->dirty_blob();
           auto b_off = wi.post_write_offset;
@@ -12276,7 +12276,7 @@ void BlueStore::txc_aio_finish(void *p) {
           dblob.allocated(b_off, final_length, extents);
           ceph_assert(dblob.has_csum() == false);
         }
-        auto o = c->get_onode(post_wctx.oid, false, false);
+        auto o = post_wctx.o;
         _wctx_finish(txc, c, o, &wctx);
         if (end > o->onode.size) {
           dout(20) << __func__ << " extending size to 0x" << std::hex << end
@@ -12293,6 +12293,7 @@ void BlueStore::txc_aio_finish(void *p) {
     txc->post_wctxs.clear();
 
     _txc_write_nodes(txc, txc->t);
+    }
 
     // journal deferred items
     if (txc->deferred_txn) {
@@ -15798,7 +15799,7 @@ int BlueStore::_do_write(
   if (bdev->is_smr() && bdev->need_postpone_db_transaction()) {
     txc->post_write = true;
     o->post_write = true;
-    txc->post_wctxs.push_back({std::move(wctx), offset, length, o->oid, c});
+    txc->post_wctxs.push_back({std::move(wctx), offset, length, o});
   } else {
     _wctx_finish(txc, c, o, &wctx);
     if (end > o->onode.size) {
