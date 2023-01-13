@@ -857,6 +857,7 @@ public:
     bool encode_some(uint32_t offset, uint32_t length, ceph::buffer::list& bl,
 		     unsigned *pn);
     unsigned decode_some(ceph::buffer::list& bl);
+    void open_shared_blob(uint64_t sbid, BlobRef b);
 
     void bound_encode_spanning_blobs(size_t& p);
     void encode_spanning_blobs(ceph::buffer::list::contiguous_appender& p);
@@ -869,7 +870,9 @@ public:
     }
 
     void update(KeyValueDB::Transaction t, bool force);
+    void update(CephContext* cct,bool force); // for MergeOperator
     decltype(BlueStore::Blob::id) allocate_spanning_blob_id();
+    void reshard(CephContext* cct); // for MergeOpeartor
     void reshard(
       KeyValueDB *db,
       KeyValueDB::Transaction t);
@@ -1105,6 +1108,7 @@ public:
     Collection *c;
     ghobject_t oid;
     bool post_write = false;
+    bool partial = false;
 
     /// key under PREFIX_OBJ where we are stored
     mempool::bluestore_cache_meta::string key;
@@ -1417,7 +1421,7 @@ public:
     OnodeCacheShard* get_onode_cache() const {
       return onode_map.cache;
     }
-    OnodeRef get_onode(const ghobject_t& oid, bool create, bool is_createop=false);
+    OnodeRef get_onode(const ghobject_t& oid, bool create, bool is_createop=false, bool for_read = false);
 
     // the terminology is confusing here, sorry!
     //
@@ -1582,7 +1586,7 @@ public:
   };
   bool zns_opt_zone_limit = false;
   bool zns_log_onode = false;
-  bool check_ok_to_log(OnodeRef &o);
+  bool check_ok_to_log(ghobject_t& o);
 
   struct WriteContext {
     bool buffered = false;          ///< buffered write

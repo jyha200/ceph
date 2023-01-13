@@ -1973,7 +1973,7 @@ void PrimaryLogPG::do_request(
 }
 
 bool PrimaryLogPG::logging_object(const hobject_t& oid) {
-  return zns_log_onode && oid.oid.name.find("rbd_data.") != string::npos;
+  return zns_log_onode && oid.oid.name.find("rbd_data") != string::npos;
 }
 
 /** do_op - do an op
@@ -5788,8 +5788,10 @@ int PrimaryLogPG::do_read(OpContext *ctx, OSDOp& osd_op) {
     op.extent.length = size;
 
   if (op.extent.offset >= size) {
-    op.extent.length = 0;
-    trimmed_read = true;
+    if (logging_object(soid) == false) {
+      op.extent.length = 0;
+      trimmed_read = true;
+    }
   } else if (op.extent.offset + op.extent.length > size) {
     op.extent.length = size - op.extent.offset;
     trimmed_read = true;
