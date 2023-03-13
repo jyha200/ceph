@@ -1,0 +1,65 @@
+sudo sshpass -f ./pswd ssh jyha@10.0.0.40 "echo 1234 | sudo -S pkill -9 ceph"
+[sudo] password for jyha: sudo sshpass -f ./pswd ssh jyha@10.0.0.40 "echo 1234 | sudo -S /home/jyha/mnt2/for_zns/ceph/test_script/bringup_zns.sh enable_opt1_2"
+[sudo] password for jyha: brinup_mon start
+creating /tmp/ceph.mon.keyring
+creating /etc/ceph/ceph.client.admin.keyring
+creating /etc/ceph/bootstrap-osd/ceph.keyring
+importing contents of /etc/ceph/ceph.client.admin.keyring into /tmp/ceph.mon.keyring
+importing contents of /etc/ceph/bootstrap-osd/ceph.keyring into /tmp/ceph.mon.keyring
+/home/jyha/mnt2/for_zns/ceph/test_script/../build/bin/monmaptool: monmap file /tmp/monmap
+setting min_mon_release = octopus
+/home/jyha/mnt2/for_zns/ceph/test_script/../build/bin/monmaptool: set fsid to 6b6420d2-41af-4377-9a4d-de4b9dcfaf1e
+/home/jyha/mnt2/for_zns/ceph/test_script/../build/bin/monmaptool: writing epoch 0 to /tmp/monmap (1 monitors)
+brinup_mon done
+brinup_mgr start
+creating /etc/ceph/ceph.mon.keyring
+added key for mgr.a
+brinup_mgr done
+brinup_osd start
+umount: /var/lib/ceph/osd/ceph-0: not mounted.
+1+0 records in
+1+0 records out
+1048576 bytes (1.0 MB, 1.0 MiB) copied, 0.00377196 s, 278 MB/s
+creating /var/lib/ceph/osd/ceph-0/keyring
+added entity osd.0 auth(key=AQDr5MRjFpGhCRAAqa4HucQeM5LcrNB3HdYyTQ==)
+2023-01-16T05:47:30.444+0000 7f3530d05f40 -1 bluestore() _read_fsid unparsable uuid 
+
+mkfs osd done
+2023-01-16T05:47:48.676+0000 7f5239ce4f40 -1 osd.0 0 log_to_monitors {default=true}
+
+brinup_osd done
+pool 'bench' created
+sudo fio --ioengine=rbd --clientname admin --pool bench --bs 4k --eta-newline 500ms --readwrite randwrite --invalidate 0 --direct 1 --group_reporting --time_based --runtime 3m --numjobs 16 --thread --iodepth 32 --name test --rbdname test_1
+test: (g=0): rw=randwrite, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=rbd, iodepth=32
+...
+fio-3.16
+Starting 16 threads
+
+test: (groupid=0, jobs=16): err= 0: pid=905394: Mon Jan 16 14:50:55 2023
+  write: IOPS=46.1k, BW=180MiB/s (189MB/s)(31.6GiB/180024msec); 0 zone resets
+    slat (nsec): min=1376, max=5291.2k, avg=8379.24, stdev=8156.95
+    clat (usec): min=652, max=545702, avg=11099.91, stdev=15649.17
+     lat (usec): min=657, max=545707, avg=11108.29, stdev=15649.31
+    clat percentiles (msec):
+     |  1.00th=[    5],  5.00th=[    5], 10.00th=[    6], 20.00th=[    6],
+     | 30.00th=[    7], 40.00th=[    7], 50.00th=[    8], 60.00th=[    8],
+     | 70.00th=[    9], 80.00th=[   11], 90.00th=[   17], 95.00th=[   31],
+     | 99.00th=[   90], 99.50th=[  113], 99.90th=[  161], 99.95th=[  184],
+     | 99.99th=[  247]
+   bw (  KiB/s): min=23835, max=295663, per=100.00%, avg=184296.74, stdev=2605.04, samples=5759
+   iops        : min= 5958, max=73915, avg=46073.93, stdev=651.26, samples=5759
+  lat (usec)   : 750=0.01%, 1000=0.01%
+  lat (msec)   : 2=0.01%, 4=0.58%, 10=76.17%, 20=15.74%, 50=4.44%
+  lat (msec)   : 100=2.32%, 250=0.72%, 500=0.01%, 750=0.01%
+  cpu          : usr=3.40%, sys=1.88%, ctx=4568115, majf=0, minf=3885215
+  IO depths    : 1=0.1%, 2=0.1%, 4=0.1%, 8=0.1%, 16=0.1%, 32=100.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.1%, 64=0.0%, >=64=0.0%
+     issued rwts: total=0,8294575,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=32
+
+Run status group 0 (all jobs):
+  WRITE: bw=180MiB/s (189MB/s), 180MiB/s-180MiB/s (189MB/s-189MB/s), io=31.6GiB (33.0GB), run=180024-180024msec
+
+Disk stats (read/write):
+  sdb: ios=0/5, merge=0/1, ticks=0/1, in_queue=0, util=0.01%

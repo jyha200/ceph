@@ -1,6 +1,6 @@
 #!/bin/bash
 
-NUM_RBD=$1
+NUM_RBD=16
 
 execute_remote_cmd() {
 	pswd=$(cat ./pswd)
@@ -9,7 +9,7 @@ execute_remote_cmd() {
 }
 
 execute_remote_cmd "pkill -9 ceph" jyha 10.0.0.40
-execute_remote_cmd "/home/jyha/mnt2/for_zns/ceph/test_script/bringup_zns.sh $2" jyha 10.0.0.40
+execute_remote_cmd "/home/jyha/mnt/my_ceph/ceph/test_script/bringup_zns_open_zone.sh $1 $2" jyha 10.0.0.40
 sudo sshpass -f ./pswd scp jyha@10.0.0.40:/etc/ceph/ceph.client.admin.keyring /etc/ceph
 
 sudo ../build/bin/ceph osd pool create bench 32 32
