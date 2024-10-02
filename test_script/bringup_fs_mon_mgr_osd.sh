@@ -41,13 +41,13 @@ bringup_osd() {
   DEV=$1
   sudo umount $DEV
   sudo rm -r /var/lib/ceph/osd/ceph-$ID
-#  sudo nvme format -f -s1 $DEV
-  sudo dd if=/dev/zero of=$DEV bs=1M count=1
-  mkdir /var/lib/ceph/osd/ceph-$ID
-  sudo chown -R ceph:ceph /var/lib/ceph/osd/ceph-$ID
-  ln -s $DEV /var/lib/ceph/osd/ceph-$ID/block
+  sudo mkfs.f2fs $DEV -f
+  sudo mount $DEV /mnt
+  sudo mkdir /mnt/ceph-$ID
+  sudo chown -R ceph:ceph /mnt/ceph-$ID
+  sudo mkdir /mnt/ceph-$ID/osd$ID
   echo "osd id: $ID"
-  sudo $BIN_DIR/ceph-authtool --create-keyring /var/lib/ceph/osd/ceph-$ID/keyring --name osd.$ID --add-key $OSD_SECRET
+  sudo $BIN_DIR/ceph-authtool --create-keyring /mnt/ceph-$ID/keyring --name osd.$ID --add-key $OSD_SECRET
   sudo $BIN_DIR/ceph-osd -i $ID --mkfs --osd-uuid $UUID --debug-osd 1
   echo "mkfs osd done"
   sudo $BIN_DIR/ceph-osd -i $ID --debug-osd 1
@@ -76,7 +76,7 @@ execute_remote_cmd() {
 sudo umount /mnt
 sudo pkill -9 ceph
 sudo mkdir -p /etc/ceph
-sudo cp ${CUR_DIR}/ceph_normal.conf /etc/ceph/ceph.conf
+sudo cp ${CUR_DIR}/ceph_fs.conf /etc/ceph/ceph.conf
 
 bringup_mon
 bringup_mgr
